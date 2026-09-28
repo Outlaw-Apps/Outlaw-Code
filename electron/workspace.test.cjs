@@ -109,3 +109,33 @@ test('operations fail with EPERM when no root is set', async () => {
   ws.setRoot(null);
   await assert.rejects(() => ws.readFile('a.txt'), (err) => err.code === 'EPERM');
 });
+
+test('search finds matches with line/column info', async (t) => {
+  await withRoot(t, async () => {
+    await ws.writeFile('a.ts', 'const x = 1;\nconst target = 2;\n');
+    await ws.writeFile(path.join('sub', 'b.ts'), 'function target() {}\n');
+    const results = await ws.search('target');
+    assert.strictEqual(results.length, 2);
+    assert.strictEqual(results[0].path.endsWith('a.ts'), true);
+    assert.strictEqual(results[0].line, 2);
+    assert.strictEqual(results[0].matchStart, 6);
+    assert.strictEqual(results[0].matchEnd, 12);
+  });
+});
+
+test('search skips node_modules and binary extensions', async (t) => {
+  await withRoot(t, async () => {
+    await ws.writeFile(path.join('node_modules', 'dep.js'), 'target here');
+    await ws.writeFile('img.png', 'target in a binary');
+    const results = await ws.search('target');
+    assert.strictEqual(results.length, 0);
+  });
+});
+
+test('search respects maxResults', async (t) => {
+  await withRoot(t, async () => {
+    for (let i = 0; i < 10; i++) await ws.writeFile(`f${i}.txt`, 'target\n');
+    const results = await ws.search('target', 5);
+    assert.strictEqual(results.length, 5);
+  });
+});

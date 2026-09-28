@@ -157,9 +157,53 @@ module.exports.delete = async function remove(targetPath) {
   }
 };
 
-/** Search is implemented in Task 2. */
-module.exports.search = async function search() {
-  return [];
+module.exports.search = async function search(query, maxResults = DEFAULT_MAX_RESULTS) {
+  if (!root) throw new FsError('EPERM', 'No folder is open');
+  if (!query) return [];
+  const needle = query.toLowerCase();
+  const results = [];
+  const stack = [root];
+
+  while (stack.length > 0 && results.length < maxResults) {
+    const dir = stack.pop();
+    let names;
+    try {
+      names = await fsp.readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (results.length >= maxResults) break;
+      if (SKIPPED_DIR_NAMES.has(name)) continue;
+      const full = path.join(dir, name);
+      let stat;
+      try {
+        stat = await fsp.stat(full);
+      } catch {
+        continue;
+      }
+      if (stat.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (stat.size > MAX_SEARCH_BYTES || BINARY_EXT.test(name)) continue;
+      let content;
+      try {
+        content = await fsp.readFile(full, 'utf8');
+      } catch {
+        continue;
+      }
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length && results.length < maxResults; i++) {
+        const lower = lines[i].toLowerCase();
+        const idx = lower.indexOf(needle);
+        if (idx !== -1) {
+          results.push({ path: full, line: i + 1, lineText: lines[i].slice(0, 300), matchStart: idx, matchEnd: idx + query.length });
+        }
+      }
+    }
+  }
+  return results;
 };
 
 /** Watch is implemented in Task 3. */
