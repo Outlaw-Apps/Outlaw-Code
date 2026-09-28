@@ -20,6 +20,7 @@ interface EditorLayoutProps {
   sandbox: any | null;
   initialPrompt?: string | null;
   onOpenSettings?: () => void;
+  onOpenFolder?: (preselected?: string) => void;
 }
 
 function getLanguage(path: string | null): string {

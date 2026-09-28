@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { ScrollArea } from './ui/scroll-area';
-import { Clock, Code, Box, ChevronRight, Terminal } from 'lucide-react';
+import { Clock, Code, Box, ChevronRight, Terminal, FolderOpen } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
 export interface Project {
@@ -18,9 +18,11 @@ interface HistoryModalProps {
   onSelectProject: (project: Project) => void;
   currentSandboxId?: string;
   userName: string | null;
+  recentFolders?: string[];
+  onOpenFolder?: (folder: string) => void;
 }
 
-export function HistoryModal({ isOpen, onClose, onSelectProject, currentSandboxId, userName }: HistoryModalProps) {
+export function HistoryModal({ isOpen, onClose, onSelectProject, currentSandboxId, userName, recentFolders, onOpenFolder }: HistoryModalProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -74,6 +76,27 @@ export function HistoryModal({ isOpen, onClose, onSelectProject, currentSandboxI
         
         <ScrollArea className="h-[500px] bg-[#0d0d0d]">
           <div className="p-6">
+            {recentFolders && recentFolders.length > 0 && (
+              <div className="space-y-2 mb-6">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Recent folders
+                </div>
+                {recentFolders.map((folder) => (
+                  <button
+                    key={folder}
+                    onClick={() => onOpenFolder?.(folder)}
+                    className="w-full text-left group p-3 rounded-xl border border-[#2d2d2d] bg-[#141414] hover:bg-[#1a1a1a] hover:border-[#3d3d3d] transition-all duration-200 flex items-center gap-2"
+                  >
+                    <FolderOpen size={14} className="text-muted-foreground group-hover:text-primary shrink-0" />
+                    <span className="text-sm text-foreground truncate">{folder.split(/[\/]/).pop()}</span>
+                    <span className="text-[10px] text-muted-foreground/50 font-mono truncate">{folder}</span>
+                    <span className="ml-auto text-[11px] text-primary opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                      Open <ChevronRight size={12} className="inline" />
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             {isLoading ? (
               <div className="flex flex-col items-center justify-center py-20 gap-3 text-muted-foreground">
                 <div className="animate-spin rounded-full h-5 w-5 border-2 border-primary border-t-transparent"></div>

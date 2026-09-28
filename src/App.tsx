@@ -10,11 +10,14 @@ import {
   Plus,
   LogOut,
   FolderPlus,
+  FolderOpen,
   FileUp,
   FolderUp,
   Sparkles
 } from 'lucide-react';
 import { requestImportFiles, requestImportFolder } from './lib/import-files';
+import { FsProvider, hasLocalFs } from './lib/fs/context';
+import { getRecentFolders } from './lib/recent-folders';
 import { Button } from './components/ui/button';
 import {
   DropdownMenu,
@@ -91,6 +94,18 @@ export default function App() {
     window.location.reload();
   };
 
+  const openFolderHandler = async (preselected?: string) => {
+    if (!window.outlawCode?.fs) return;
+    try {
+      const folder = preselected ?? (await window.outlawCode.fs.openFolder());
+      if (!folder) return;
+      setProjectName(folder.split(/[\/]/).filter(Boolean).pop() || folder);
+      setShowHistory(false);
+    } catch (err) {
+      console.error('Failed to open folder:', err);
+    }
+  };
+
   const handleLogout = () => {
     localStorage.removeItem('cursor_user_name');
     setUserName(null);
@@ -116,11 +131,14 @@ export default function App() {
 
       {/* History Modal */}
       <HistoryModal
+        key={showHistory ? 'history-open' : 'history-closed'}
         isOpen={showHistory}
         onClose={() => setShowHistory(false)}
         onSelectProject={handleSelectProject}
         currentSandboxId={sandbox?.id}
         userName={userName}
+        recentFolders={hasLocalFs() ? getRecentFolders() : undefined}
+        onOpenFolder={(folder) => { void openFolderHandler(folder); }}
       />
 
       {/* Top VS Code / Cursor Menubar (38px height) */}
@@ -155,6 +173,15 @@ export default function App() {
                   <FolderPlus size={13} />
                   Open Project History...
                 </DropdownMenuItem>
+                {hasLocalFs() && (
+                  <>
+                    <DropdownMenuItem onClick={() => void openFolderHandler()} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                      <FolderOpen size={13} />
+                      Open Folder...
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator className="bg-border/30" />
+                  </>
+                )}
                 <DropdownMenuSeparator className="bg-border/30" />
                 <DropdownMenuItem onClick={() => requestImportFiles()} className="gap-2 cursor-pointer focus:bg-zinc-800">
                   <FileUp size={13} />
@@ -285,10 +312,15 @@ export default function App() {
             </Button>
           </div>
         ) : (
-          <EditorLayout
+          <FsProvider
             sandbox={sandbox}
-            onOpenSettings={() => setShowSettings(true)}
-          />
+            onFolderOpened={(info) => setProjectName(info.name)}
+          >
+            <EditorLayout
+              sandbox={sandbox}
+              onOpenSettings={() => setShowSettings(true)}
+            />
+          </FsProvider>
         )}
       </main>
     </div>
