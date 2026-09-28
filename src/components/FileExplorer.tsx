@@ -18,10 +18,11 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { FilePlus, FolderPlus, Pencil, Trash2 } from 'lucide-react';
-import { useFs, useGit } from '../lib/fs/context';
+import { useFs, useGit, useWorkspace } from '../lib/fs/context';
 import type { FsEntry } from '../lib/fs/types';
 import type { GitFileEntry } from '../lib/git/types';
 import { onWorkspaceEvent, emitWorkspaceEvent } from '../lib/workspace-events';
+import { isSameOrUnder, joinPath, parentOf, relativeTo } from '../lib/fs/paths';
 
 interface FileExplorerProps {
   onFileSelect: (path: string) => void;
@@ -33,13 +34,14 @@ interface FileExplorerProps {
 export function FileExplorer({ onFileSelect, selectedFile, className, onImportComplete }: FileExplorerProps) {
   const provider = useFs();
   const git = useGit();
+  const { openFolder } = useWorkspace();
 
   // path -> children; loaded lazily on first expansion
   const [tree, setTree] = useState<Record<string, FsEntry[]>>({});
   const [cappedDirs, setCappedDirs] = useState<Set<string>>(new Set());
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const expandedFoldersRef = useRef(expandedFolders);
-  expandedFoldersRef.current = expandedFolders;
+  const expandedRef = useRef(expandedFolders);
+  expandedRef.current = expandedFolders;
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gitStatusMap, setGitStatusMap] = useState<Record<string, GitFileEntry>>({});
@@ -52,7 +54,7 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
   const folderInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
 
-  const rootDir = provider.root ?? '/home/user/app';
+  const rootDir = provider.root ?? '';
 
   // React doesn't reliably render the non-standard `webkitdirectory`
   // attribute, and without it the folder picker degrades to a single-file
@@ -89,6 +91,7 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
 
   // Load workspace root + git status; also after any tree-changed event.
   const refreshRoot = useCallback(async () => {
+    if (!provider.root) return;
     await loadDir(rootDir, { silent: true });
     try {
       if (await git.available()) {
@@ -108,23 +111,24 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
     void refreshRoot();
   }, [refreshRoot]);
 
-  // Refresh the tree for workspace changes.
+  // Refresh the visible tree after workspace changes.
   useEffect(() => {
     const off = onWorkspaceEvent((event) => {
-      let expanded = expandedFoldersRef.current;
+      if (event.type === 'files-changed') return;
+      let expanded = expandedRef.current;
       if (event.type === 'renamed' || event.type === 'deleted') {
-        const removedPath = event.type === 'renamed' ? event.oldPath : event.path;
-        const isRemoved = (entry: string) => entry === removedPath || entry.startsWith(`${removedPath}/`);
-        expanded = new Set([...expanded].filter((entry) => !isRemoved(entry)));
-        expandedFoldersRef.current = expanded;
+        const invalidatedPath = event.type === 'renamed' ? event.oldPath : event.path;
+        setTree((prev) => Object.fromEntries(
+          Object.entries(prev).filter(([path]) => !isSameOrUnder(path, invalidatedPath))
+        ));
+        expanded = new Set([...expanded].filter((path) => !isSameOrUnder(path, invalidatedPath)));
+        expandedRef.current = expanded;
         setExpandedFolders(expanded);
-        setTree((prev) => Object.fromEntries(Object.entries(prev).filter(([entry]) => !isRemoved(entry))));
-        setCappedDirs((prev) => new Set([...prev].filter((entry) => !isRemoved(entry))));
+        setCappedDirs((prev) => new Set([...prev].filter((path) => !isSameOrUnder(path, invalidatedPath))));
       }
-      if (event.type === 'tree-changed' || event.type === 'renamed' || event.type === 'deleted') {
-        void refreshRoot();
-        for (const dir of expanded) void loadDir(dir, { silent: true });
-      }
+      if (event.type !== 'tree-changed' && event.type !== 'renamed' && event.type !== 'deleted') return;
+      void refreshRoot();
+      for (const dir of expanded) void loadDir(dir, { silent: true });
     });
 
     return off;
@@ -142,10 +146,12 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
         // Auto-expand the full ancestor chain of the first import so nested
         // folder contents are actually visible (not just the leaf parent).
         const ancestors = new Set<string>();
-        let acc = imported[0].split('/').slice(0, -1).join('/');
-        while (acc.startsWith(rootDir) && acc !== rootDir) {
+        let acc = parentOf(imported[0], rootDir);
+        while (acc !== rootDir && isSameOrUnder(acc, rootDir)) {
           ancestors.add(acc);
-          acc = acc.slice(0, acc.lastIndexOf('/'));
+          const next = parentOf(acc, rootDir);
+          if (next === acc) break;
+          acc = next;
         }
         setExpandedFolders((prev) => new Set([...prev, ...ancestors]));
         for (const anc of ancestors) void loadDir(anc, { silent: true });
@@ -211,14 +217,6 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
   const [opBusy, setOpBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  const parentOf = (p: string) => {
-    const idx = p.lastIndexOf('/');
-    return idx > 0 ? p.slice(0, idx) : rootDir;
-  };
-
-  const joinPath = (dir: string, name: string) =>
-    `${dir.replace(/\/+$/, '')}/${name.replace(/^\/+/, '')}`;
-
   const runPendingOp = async () => {
     if (!pendingOp) return;
     const name = opValue.trim();
@@ -265,11 +263,7 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
   };
 
   const gitStatusColor = (path: string): string | undefined => {
-    const normalizedPath = path.replace(/\\/g, '/');
-    const normalizedRoot = provider.root?.replace(/\\/g, '/').replace(/\/+$/, '');
-    const rel = normalizedRoot && normalizedPath.startsWith(`${normalizedRoot}/`)
-      ? normalizedPath.slice(normalizedRoot.length + 1)
-      : normalizedPath;
+    const rel = provider.root ? relativeTo(provider.root, path) : path;
     const entry = gitStatusMap[rel];
     if (!entry) return undefined;
     if (entry.status === 'untracked') return 'text-green-400';
@@ -323,7 +317,7 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
               <ContextMenuItem
                 className="gap-2 cursor-pointer"
                 onSelect={() => {
-                  setPendingOp({ mode: 'new-file', dir: node.kind === 'dir' ? node.path : parentOf(node.path) });
+                  setPendingOp({ mode: 'new-file', dir: node.kind === 'dir' ? node.path : parentOf(node.path, rootDir) });
                   setOpValue('');
                   setOpError(null);
                 }}
@@ -333,7 +327,7 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
               <ContextMenuItem
                 className="gap-2 cursor-pointer"
                 onSelect={() => {
-                  setPendingOp({ mode: 'new-dir', dir: node.kind === 'dir' ? node.path : parentOf(node.path) });
+                  setPendingOp({ mode: 'new-dir', dir: node.kind === 'dir' ? node.path : parentOf(node.path, rootDir) });
                   setOpValue('');
                   setOpError(null);
                 }}
@@ -344,7 +338,7 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
               <ContextMenuItem
                 className="gap-2 cursor-pointer"
                 onSelect={() => {
-                  setPendingOp({ mode: 'rename', dir: parentOf(node.path), originalName: node.name });
+                  setPendingOp({ mode: 'rename', dir: parentOf(node.path, rootDir), originalName: node.name });
                   setOpValue(node.name);
                   setOpError(null);
                 }}
@@ -454,7 +448,20 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
 
       <ScrollArea className="flex-1">
         <div className="py-2">
-          {(tree[rootDir] ?? []).length === 0 ? (
+          {!provider.root ? (
+            <div className="px-4 py-8 text-center space-y-3">
+              <p className="text-xs text-muted-foreground">No folder opened</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-[11px] gap-1.5"
+                onClick={() => void openFolder()}
+              >
+                <FolderUp size={12} />
+                Open Folder...
+              </Button>
+            </div>
+          ) : (tree[rootDir] ?? []).length === 0 ? (
             <div className="px-4 py-8 text-center space-y-3">
               <p className="text-xs text-muted-foreground">
                 {isLoading ? 'Loading...' : isImporting ? 'Importing...' : 'No files found'}

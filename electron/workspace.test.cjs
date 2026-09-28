@@ -102,7 +102,6 @@ test('createEntry on an existing directory throws EEXIST', async (t) => {
     await assert.rejects(() => ws.createEntry('existing', 'dir'), (err) => err.code === 'EEXIST');
   });
 });
-
 test('rename moves files and confines destination', async (t) => {
   await withRoot(t, async () => {
     await ws.writeFile('old.txt', 'data');

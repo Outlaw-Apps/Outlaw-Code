@@ -5,6 +5,7 @@
  * (via `outlaw:import-files` / `outlaw:import-folder` custom events).
  */
 import type { FileSystemProvider } from './fs/types';
+import { joinPath } from './fs/paths';
 
 export const WORKSPACE_ROOT = '/home/user/app';
 
@@ -28,21 +29,22 @@ function cleanSegment(seg: string): string {
   return seg.replace(/[^a-zA-Z0-9._\-+@()[\]{} ]/g, '_').trim() || 'unnamed';
 }
 
+function cleanedSegments(file: ImportableFile): string[] {
+  const rel = (file.webkitRelativePath || file.name || 'unnamed').replace(/\\/g, '/');
+  return rel
+    .split('/')
+    .filter((part) => part && part !== '.' && part !== '..')
+    .map(cleanSegment);
+}
+
 /**
  * Resolve the destination sandbox path for a picked file.
  * - Folder picks provide `webkitRelativePath` like `my-folder/src/App.tsx`
  *   -> `/home/user/app/my-folder/src/App.tsx`
  * - Plain file picks only have `name` -> `/home/user/app/<name>`
  */
-function toRelativeWorkspacePath(file: ImportableFile): string {
-  const rel = (file.webkitRelativePath || file.name || 'unnamed').replace(/\\/g, '/');
-  const parts = rel.split('/').filter((p) => p && p !== '.' && p !== '..');
-  const cleaned = parts.map(cleanSegment);
-  return cleaned.join('/');
-}
-
 export function toWorkspacePath(file: ImportableFile, root = WORKSPACE_ROOT): string {
-  return `${root.replace(/[\\/]+$/, '')}/${toRelativeWorkspacePath(file)}`;
+  return joinPath(root, ...cleanedSegments(file));
 }
 
 /** Directories + binaries we skip on import to keep the workspace sane. */
@@ -56,7 +58,7 @@ export interface ImportResult {
 }
 
 function shouldSkip(path: string, size: number): string | null {
-  const lower = path.toLowerCase();
+  const lower = path.replace(/\\/g, '/').toLowerCase();
   if (SKIPPED_DIRS.some((d) => lower.includes(`/${d}/`) || lower.endsWith(`/${d}`))) {
     return 'system directory (node_modules/.git/dist/...)';
   }
@@ -77,19 +79,19 @@ export async function importFileList(
   list: FileList | File[] | null | undefined,
 ): Promise<ImportResult> {
   const result: ImportResult = { imported: [], skipped: [] };
-  if (!provider || !list) return result;
-  const root = provider.root ?? WORKSPACE_ROOT;
+  const root = provider.root;
+  if (!root || !list) return result;
 
   const files = Array.from(list).slice(0, MAX_TOTAL_FILES);
 
   for (const raw of files as ImportableFile[]) {
-    const rel = toRelativeWorkspacePath(raw);
-    const skipReason = shouldSkip(`/${rel}`, raw.size);
+    const rel = `/${cleanedSegments(raw).join('/')}`;
+    const skipReason = shouldSkip(rel, raw.size);
     if (skipReason) {
       result.skipped.push({ name: raw.webkitRelativePath || raw.name, reason: skipReason });
       continue;
     }
-    const dest = `${root.replace(/[\\/]+$/, '')}/${rel}`;
+    const dest = toWorkspacePath(raw, root);
     try {
       const text = await raw.text();
       await provider.writeFile(dest, text);

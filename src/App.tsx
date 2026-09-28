@@ -95,8 +95,8 @@ export default function App() {
   };
 
   const openFolderHandler = (preselected?: string) => {
-    setShowHistory(false);
     requestOpenFolder(preselected);
+    setShowHistory(false);
   };
 
   const handleLogout = () => {
@@ -304,7 +304,11 @@ export default function App() {
               Retry Connection
             </Button>
           </div>
-        ) : sandbox || hasLocalFs() ? (
+        ) : !sandbox && !hasLocalFs() ? (
+          <div className="h-full w-full flex flex-col items-center justify-center p-6 text-center text-zinc-400 space-y-3">
+            <p className="text-sm font-medium">Starting workspace...</p>
+          </div>
+        ) : (
           <FsProvider
             sandbox={sandbox}
             onFolderOpened={(info) => setProjectName(info.name)}
@@ -314,11 +318,6 @@ export default function App() {
               onOpenSettings={() => setShowSettings(true)}
             />
           </FsProvider>
-        ) : (
-          <div className="h-full w-full flex flex-col items-center justify-center gap-3 text-muted-foreground">
-            <div className="animate-spin rounded-full h-5 w-5 border-2 border-primary border-t-transparent"></div>
-            <span className="text-xs">Starting workspace…</span>
-          </div>
         )}
       </main>
     </div>

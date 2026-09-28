@@ -99,7 +99,30 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     setTimeout(() => setNotice((prev) => (prev === message ? null : prev)), 4000);
   }, []);
 
-  // Clear workspace when switching projects
+  const refreshGitStatus = useCallback(async () => {
+    if (gitAvailable === false) return;
+    try {
+      const available = gitAvailable ?? await git.available();
+      setGitAvailable(available);
+      if (!available) return;
+      setGitStatus(await git.status());
+    } catch {
+      setGitStatus(null);
+    }
+  }, [git, gitAvailable]);
+
+  const confirmFolderSwitch = useCallback(() => {
+    const dirtyCount = openTabsRef.current.filter((tab) => tab.isDirty).length;
+    return dirtyCount === 0 ||
+      window.confirm(`Discard unsaved changes in ${dirtyCount} file(s) and open another folder?`);
+  }, []);
+
+  useEffect(() => {
+    setSwitchGuard(confirmFolderSwitch);
+    return () => setSwitchGuard(null);
+  }, [confirmFolderSwitch, setSwitchGuard]);
+
+  // Clear workspace when switching sandboxes or folders.
   useEffect(() => {
     setOpenTabs([]);
     setActiveFilePath(null);
@@ -109,17 +132,8 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     setSelectedText('');
     setGitStatus(null);
     setSearchResults([]);
+    setGitAvailable(null);
   }, [sandbox?.id, workspace?.root]);
-
-  useEffect(() => {
-    setSwitchGuard(() => {
-      const dirtyCount = openTabsRef.current.filter((tab) => tab.isDirty).length;
-      return dirtyCount === 0 || window.confirm(
-        `You have unsaved changes in ${dirtyCount} file(s). Discard them and open another folder?`
-      );
-    });
-    return () => setSwitchGuard(null);
-  }, [setSwitchGuard]);
 
   // Import entries from the top-level File menu / empty state: make sure the
   // Explorer (which owns the file/folder pickers) is visible, then forward
@@ -249,6 +263,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
         prev.map((t) => (t.path === path ? { ...t, isDirty: false } : t))
       );
       setBuildLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Saved ${path}`]);
+      await refreshGitStatus();
     } catch (err) {
       console.error('Failed to save file:', err);
       setBuildLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Error saving ${path}: ${err}`]);
@@ -256,7 +271,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     } finally {
       setIsSaving(false);
     }
-  }, [provider, notify]);
+  }, [provider, notify, refreshGitStatus]);
 
   // Handle Code Replacement from Inline AI or Chat
   const handleApplyCode = (replacement: string) => {
@@ -386,35 +401,11 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     }
   };
 
-  const refreshGitStatus = useCallback(async (isCancelled: () => boolean) => {
-    const available = gitAvailable ?? (await git.available());
-    if (isCancelled()) return;
-    setGitAvailable(available);
-    if (!available) {
-      setGitStatus(null);
-      return;
-    }
-    const status = await git.status();
-    if (!isCancelled()) setGitStatus(status);
-  }, [git, gitAvailable]);
-
-  // Fetch structured git status when the git view is opened
+  // Fetch structured git status when the git view is opened or workspace changes.
   useEffect(() => {
     if (activeActivityView !== 'git') return;
-    let cancelled = false;
-    const refresh = () => {
-      void refreshGitStatus(() => cancelled).catch(() => {
-        if (!cancelled) setGitStatus(null);
-      });
-    };
-    const off = onWorkspaceEvent((event) => {
-      if (['tree-changed', 'files-changed', 'renamed', 'deleted'].includes(event.type)) refresh();
-    });
-    refresh();
-    return () => {
-      cancelled = true;
-      off();
-    };
+    void refreshGitStatus();
+    return onWorkspaceEvent(() => void refreshGitStatus());
   }, [activeActivityView, refreshGitStatus, workspace?.root]);
 
   // Keep open tabs in sync with explorer operations.
@@ -459,6 +450,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
         }
         try {
           const fresh = await provider.readFile(path);
+          if (fresh === fileBuffersRef.current[path]) continue;
           setFileBuffers((prev) => ({ ...prev, [path]: fresh }));
           setOriginalFileBuffers((prev) => ({ ...prev, [path]: fresh }));
           notify(`${path.split('/').pop()} reloaded from disk`);
@@ -498,7 +490,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
             {/* Explorer View */}
             {activeActivityView === 'explorer' && (
               <FileExplorer
-                key={workspace?.root ?? 'virtual'}
+                key={provider.root ?? 'virtual'}
                 selectedFile={activeFilePath}
                 onFileSelect={(path) => loadFile(path)}
                 onImportComplete={handleImportComplete}

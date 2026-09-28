@@ -60,7 +60,7 @@ function isInsideRoot(candidate) {
  */
 module.exports.resolveInside = async function resolveInside(target) {
   if (!root) throw new FsError('EPERM', 'No folder is open');
-  if (path.win32.isAbsolute(target) && !path.isAbsolute(target)) {
+  if (process.platform !== 'win32' && /^[A-Za-z]:[\\/]/.test(target)) {
     throw new FsError('OUTSIDE_ROOT', `Path escapes workspace root: ${target}`);
   }
   const abs = path.resolve(root, target);
@@ -141,7 +141,8 @@ module.exports.createEntry = async function createEntry(entryPath, kind) {
     });
     if (exists) throw new FsError('EEXIST', `A file or folder with that name already exists: ${entryPath}`);
     if (kind === 'dir') {
-      await fsp.mkdir(abs, { recursive: true });
+      await fsp.mkdir(path.dirname(abs), { recursive: true });
+      await fsp.mkdir(abs);
     } else {
       await fsp.mkdir(path.dirname(abs), { recursive: true });
       await fsp.writeFile(abs, '', { encoding: 'utf8', flag: 'wx' });

@@ -13,10 +13,14 @@ const FsCtx = createContext<FileSystemProvider | null>(null);
 const GitCtx = createContext<GitClient | null>(null);
 export const OPEN_FOLDER_EVENT = 'outlaw:open-folder';
 
+export function requestOpenFolder(preselected?: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_FOLDER_EVENT, { detail: { preselected } }));
+}
+
 interface WorkspaceState {
   workspace: WorkspaceInfo | null;
   openFolder: (preselected?: string) => Promise<string | null>;
-  setSwitchGuard: (guard: (() => boolean) | null) => void;
+  setSwitchGuard: (fn: (() => boolean) | null) => void;
 }
 
 const WsCtx = createContext<WorkspaceState>({
@@ -24,10 +28,6 @@ const WsCtx = createContext<WorkspaceState>({
   openFolder: async () => null,
   setSwitchGuard: () => {},
 });
-
-export function requestOpenFolder(preselected?: string) {
-  window.dispatchEvent(new CustomEvent(OPEN_FOLDER_EVENT, { detail: { preselected } }));
-}
 
 export function createProvider(sandbox: VirtualSandbox | null): FileSystemProvider {
   if (window.outlawCode?.fs) return new ElectronFsProvider();
@@ -48,16 +48,19 @@ export function FsProvider({
   children: ReactNode;
   onFolderOpened?: (info: WorkspaceInfo) => void;
 }) {
-  const providerKey = window.outlawCode?.fs ? 'electron' : sandbox;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const providerKey = hasLocalFs() ? null : sandbox;
   const provider = useMemo(() => createProvider(sandbox), [providerKey]);
   const git = useMemo(() => createGitClient(), []);
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
-  const guardRef = useRef<(() => boolean) | null>(null);
+  const switchGuardRef = useRef<(() => boolean) | null>(null);
+
+  const setSwitchGuard = useCallback((fn: (() => boolean) | null) => {
+    switchGuardRef.current = fn;
+  }, []);
 
   const openFolder = useCallback(
     async (preselected?: string) => {
-      if (guardRef.current && !guardRef.current()) return null;
+      if (switchGuardRef.current && !switchGuardRef.current()) return null;
       const root = await provider.openFolder(preselected);
       if (!root) return null;
       const name = root.split(/[\\/]/).filter(Boolean).pop() || root;
@@ -70,35 +73,37 @@ export function FsProvider({
     [provider, onFolderOpened]
   );
 
-  const setSwitchGuard = useCallback((guard: (() => boolean) | null) => {
-    guardRef.current = guard;
-  }, []);
-
   useEffect(() => {
-    const handleOpenFolder = (event: Event) => {
-      const preselected = (event as CustomEvent<{ preselected?: string }>).detail?.preselected;
-      void openFolder(preselected).catch((error) => console.error('Failed to open folder:', error));
+    const onOpenFolder = (event: Event) => {
+      const detail = (event as CustomEvent<{ preselected?: string }>).detail;
+      void openFolder(detail?.preselected).catch((err) => {
+        console.error('Failed to open folder:', err);
+      });
     };
-    window.addEventListener(OPEN_FOLDER_EVENT, handleOpenFolder);
-    return () => window.removeEventListener(OPEN_FOLDER_EVENT, handleOpenFolder);
+    window.addEventListener(OPEN_FOLDER_EVENT, onOpenFolder);
+    return () => window.removeEventListener(OPEN_FOLDER_EVENT, onOpenFolder);
   }, [openFolder]);
 
   useEffect(() => {
-    if (!provider.capabilities.watch) {
-      const id = setInterval(() => emitWorkspaceEvent({ type: 'tree-changed' }), 5000);
-      return () => clearInterval(id);
+    let interval: ReturnType<typeof setInterval> | null = null;
+    if (provider.capabilities.watch) {
+      if (provider.root) {
+        void provider.watch((events) => {
+          emitWorkspaceEvent({ type: 'tree-changed' });
+          emitWorkspaceEvent({
+            type: 'files-changed',
+            paths: events.filter((event) => event.type === 'changed').map((event) => event.path),
+          });
+        }).catch((err) => console.error('Failed to watch workspace:', err));
+      }
+    } else {
+      interval = setInterval(() => emitWorkspaceEvent({ type: 'tree-changed' }), 5000);
     }
-    if (!workspace) return;
-    void provider.watch((events) => {
-      emitWorkspaceEvent({ type: 'tree-changed' });
-      emitWorkspaceEvent({
-        type: 'files-changed',
-        paths: events.filter((event) => event.type === 'changed').map((event) => event.path),
-      });
-    });
-    return () => { void provider.unwatch(); };
-  }, [provider, workspace?.root]);
-
+    return () => {
+      if (interval) clearInterval(interval);
+      void provider.unwatch();
+    };
+  }, [provider, workspace]);
   return (
     <FsCtx.Provider value={provider}>
       <GitCtx.Provider value={git}>
