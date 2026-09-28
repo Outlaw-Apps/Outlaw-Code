@@ -16,7 +16,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { requestImportFiles, requestImportFolder } from './lib/import-files';
-import { FsProvider, hasLocalFs } from './lib/fs/context';
+import { FsProvider, hasLocalFs, requestOpenFolder } from './lib/fs/context';
 import { getRecentFolders } from './lib/recent-folders';
 import { Button } from './components/ui/button';
 import {
@@ -94,16 +94,9 @@ export default function App() {
     window.location.reload();
   };
 
-  const openFolderHandler = async (preselected?: string) => {
-    if (!window.outlawCode?.fs) return;
-    try {
-      const folder = preselected ?? (await window.outlawCode.fs.openFolder());
-      if (!folder) return;
-      setProjectName(folder.split(/[\/]/).filter(Boolean).pop() || folder);
-      setShowHistory(false);
-    } catch (err) {
-      console.error('Failed to open folder:', err);
-    }
+  const openFolderHandler = (preselected?: string) => {
+    setShowHistory(false);
+    requestOpenFolder(preselected);
   };
 
   const handleLogout = () => {
@@ -311,7 +304,7 @@ export default function App() {
               Retry Connection
             </Button>
           </div>
-        ) : (
+        ) : sandbox || hasLocalFs() ? (
           <FsProvider
             sandbox={sandbox}
             onFolderOpened={(info) => setProjectName(info.name)}
@@ -321,6 +314,11 @@ export default function App() {
               onOpenSettings={() => setShowSettings(true)}
             />
           </FsProvider>
+        ) : (
+          <div className="h-full w-full flex flex-col items-center justify-center gap-3 text-muted-foreground">
+            <div className="animate-spin rounded-full h-5 w-5 border-2 border-primary border-t-transparent"></div>
+            <span className="text-xs">Starting workspace…</span>
+          </div>
         )}
       </main>
     </div>

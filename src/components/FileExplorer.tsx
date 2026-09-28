@@ -24,14 +24,13 @@ import type { GitFileEntry } from '../lib/git/types';
 import { onWorkspaceEvent, emitWorkspaceEvent } from '../lib/workspace-events';
 
 interface FileExplorerProps {
-  sandbox: any;
   onFileSelect: (path: string) => void;
   selectedFile: string | null;
   className?: string;
   onImportComplete?: (paths: string[]) => void;
 }
 
-export function FileExplorer({ sandbox, onFileSelect, selectedFile, className, onImportComplete }: FileExplorerProps) {
+export function FileExplorer({ onFileSelect, selectedFile, className, onImportComplete }: FileExplorerProps) {
   const provider = useFs();
   const git = useGit();
 
@@ -39,6 +38,8 @@ export function FileExplorer({ sandbox, onFileSelect, selectedFile, className, o
   const [tree, setTree] = useState<Record<string, FsEntry[]>>({});
   const [cappedDirs, setCappedDirs] = useState<Set<string>>(new Set());
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const expandedFoldersRef = useRef(expandedFolders);
+  expandedFoldersRef.current = expandedFolders;
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gitStatusMap, setGitStatusMap] = useState<Record<string, GitFileEntry>>({});
@@ -107,49 +108,35 @@ export function FileExplorer({ sandbox, onFileSelect, selectedFile, className, o
     void refreshRoot();
   }, [refreshRoot]);
 
-  // Live updates: provider.watch in Electron, 5s polling in virtual mode.
-  // The explorer is the single watch registration; EditorLayout consumes
-  // the forwarded events via the workspace event bus.
+  // Refresh the tree for workspace changes.
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    const start = async () => {
-      if (provider.capabilities.watch) {
-        await provider.watch((events) => {
-          emitWorkspaceEvent({ type: 'tree-changed' });
-          emitWorkspaceEvent({
-            type: 'files-changed',
-            paths: events.filter((e) => e.type === 'changed').map((e) => e.path),
-          });
-        });
-      } else {
-        interval = setInterval(() => emitWorkspaceEvent({ type: 'tree-changed' }), 5000);
-      }
-    };
-    void start();
-
     const off = onWorkspaceEvent((event) => {
-      if (event.type === 'tree-changed') {
+      let expanded = expandedFoldersRef.current;
+      if (event.type === 'renamed' || event.type === 'deleted') {
+        const removedPath = event.type === 'renamed' ? event.oldPath : event.path;
+        const isRemoved = (entry: string) => entry === removedPath || entry.startsWith(`${removedPath}/`);
+        expanded = new Set([...expanded].filter((entry) => !isRemoved(entry)));
+        expandedFoldersRef.current = expanded;
+        setExpandedFolders(expanded);
+        setTree((prev) => Object.fromEntries(Object.entries(prev).filter(([entry]) => !isRemoved(entry))));
+        setCappedDirs((prev) => new Set([...prev].filter((entry) => !isRemoved(entry))));
+      }
+      if (event.type === 'tree-changed' || event.type === 'renamed' || event.type === 'deleted') {
         void refreshRoot();
-        for (const dir of expandedFolders) void loadDir(dir, { silent: true });
+        for (const dir of expanded) void loadDir(dir, { silent: true });
       }
     });
 
-    return () => {
-      off();
-      if (interval) clearInterval(interval);
-      void provider.unwatch();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider, refreshRoot]);
+    return off;
+  }, [loadDir, refreshRoot]);
 
   // Import entries: file picker, folder picker, drag-drop, and global menu events.
   const handleImportList = async (list: FileList | null) => {
-    if (!list || list.length === 0 || !sandbox || isImporting) return;
+    if (!list || list.length === 0 || !provider.root || isImporting) return;
     setIsImporting(true);
     setImportStatus(`Importing ${list.length} file(s)...`);
     try {
-      const { imported, skipped } = await importFileList(sandbox, list);
+      const { imported, skipped } = await importFileList(provider, list);
       emitWorkspaceEvent({ type: 'tree-changed' });
       if (imported.length > 0) {
         // Auto-expand the full ancestor chain of the first import so nested
@@ -278,7 +265,11 @@ export function FileExplorer({ sandbox, onFileSelect, selectedFile, className, o
   };
 
   const gitStatusColor = (path: string): string | undefined => {
-    const rel = provider.root ? path.replace(`${provider.root}/`, '') : path;
+    const normalizedPath = path.replace(/\\/g, '/');
+    const normalizedRoot = provider.root?.replace(/\\/g, '/').replace(/\/+$/, '');
+    const rel = normalizedRoot && normalizedPath.startsWith(`${normalizedRoot}/`)
+      ? normalizedPath.slice(normalizedRoot.length + 1)
+      : normalizedPath;
     const entry = gitStatusMap[rel];
     if (!entry) return undefined;
     if (entry.status === 'untracked') return 'text-green-400';

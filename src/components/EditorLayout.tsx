@@ -92,14 +92,14 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
 
   const provider = useFs();
   const git = useGit();
-  const { openFolder } = useWorkspace();
+  const { openFolder, setSwitchGuard, workspace } = useWorkspace();
   const [notice, setNotice] = useState<string | null>(null);
   const notify = useCallback((message: string) => {
     setNotice(message);
     setTimeout(() => setNotice((prev) => (prev === message ? null : prev)), 4000);
   }, []);
 
-  // Clear workspace when switching sandboxes
+  // Clear workspace when switching projects
   useEffect(() => {
     setOpenTabs([]);
     setActiveFilePath(null);
@@ -107,7 +107,19 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     setOriginalFileBuffers({});
     setIsLoadingFile(false);
     setSelectedText('');
-  }, [sandbox?.id]);
+    setGitStatus(null);
+    setSearchResults([]);
+  }, [sandbox?.id, workspace?.root]);
+
+  useEffect(() => {
+    setSwitchGuard(() => {
+      const dirtyCount = openTabsRef.current.filter((tab) => tab.isDirty).length;
+      return dirtyCount === 0 || window.confirm(
+        `You have unsaved changes in ${dirtyCount} file(s). Discard them and open another folder?`
+      );
+    });
+    return () => setSwitchGuard(null);
+  }, [setSwitchGuard]);
 
   // Import entries from the top-level File menu / empty state: make sure the
   // Explorer (which owns the file/folder pickers) is visible, then forward
@@ -183,7 +195,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
       };
       void tryOpenDefault();
     }
-  }, [provider, openTabs.length, loadFile]);
+  }, [provider, openTabs.length, loadFile, workspace?.root]);
 
   // Handle Tab Selection
   const handleSelectTab = (path: string) => {
@@ -374,19 +386,36 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     }
   };
 
+  const refreshGitStatus = useCallback(async (isCancelled: () => boolean) => {
+    const available = gitAvailable ?? (await git.available());
+    if (isCancelled()) return;
+    setGitAvailable(available);
+    if (!available) {
+      setGitStatus(null);
+      return;
+    }
+    const status = await git.status();
+    if (!isCancelled()) setGitStatus(status);
+  }, [git, gitAvailable]);
+
   // Fetch structured git status when the git view is opened
   useEffect(() => {
     if (activeActivityView !== 'git') return;
     let cancelled = false;
-    (async () => {
-      const available = gitAvailable ?? (await git.available());
-      setGitAvailable(available);
-      if (!available) return;
-      const status = await git.status();
-      if (!cancelled) setGitStatus(status);
-    })().catch(() => setGitStatus(null));
-    return () => { cancelled = true; };
-  }, [activeActivityView, git, gitAvailable]);
+    const refresh = () => {
+      void refreshGitStatus(() => cancelled).catch(() => {
+        if (!cancelled) setGitStatus(null);
+      });
+    };
+    const off = onWorkspaceEvent((event) => {
+      if (['tree-changed', 'files-changed', 'renamed', 'deleted'].includes(event.type)) refresh();
+    });
+    refresh();
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [activeActivityView, refreshGitStatus, workspace?.root]);
 
   // Keep open tabs in sync with explorer operations.
   useEffect(() => {
@@ -416,7 +445,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     return off;
   }, []);
 
-  // React to external file changes (the explorer owns the provider watch).
+  // React to external file changes from the provider watch.
   useEffect(() => {
     const off = onWorkspaceEvent(async (event) => {
       if (event.type !== 'files-changed') return;
@@ -469,7 +498,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
             {/* Explorer View */}
             {activeActivityView === 'explorer' && (
               <FileExplorer
-                sandbox={sandbox}
+                key={workspace?.root ?? 'virtual'}
                 selectedFile={activeFilePath}
                 onFileSelect={(path) => loadFile(path)}
                 onImportComplete={handleImportComplete}
