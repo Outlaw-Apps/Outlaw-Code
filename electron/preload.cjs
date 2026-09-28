@@ -17,6 +17,31 @@ async function call(channel, ...args) {
   return res ? res.value : undefined;
 }
 
+const terminalDataListeners = new Map();
+const terminalExitListeners = new Map();
+const terminalDataBuffers = new Map();
+const terminalExitBuffers = new Map();
+const MAX_BUFFERED_TERMINAL_CHARS = 1024 * 1024;
+
+ipcRenderer.on('terminal:data', (_event, payload) => {
+  const listener = terminalDataListeners.get(payload.sessionId);
+  if (listener) {
+    listener(payload.data);
+    return;
+  }
+  const previous = terminalDataBuffers.get(payload.sessionId) || '';
+  terminalDataBuffers.set(
+    payload.sessionId,
+    (previous + payload.data).slice(-MAX_BUFFERED_TERMINAL_CHARS),
+  );
+});
+
+ipcRenderer.on('terminal:exit', (_event, payload) => {
+  const listener = terminalExitListeners.get(payload.sessionId);
+  if (listener) listener(payload);
+  else terminalExitBuffers.set(payload.sessionId, payload);
+});
+
 contextBridge.exposeInMainWorld('outlawCode', {
   platform: process.platform,
   aiProxyBaseURL,
@@ -41,6 +66,39 @@ contextBridge.exposeInMainWorld('outlawCode', {
     commit: (message) => call('git:commit', message),
     discard: (paths) => call('git:discard', paths),
     diff: (p) => call('git:diff', p),
+  },
+  terminal: {
+    create: (cols, rows) => call('terminal:create', cols, rows),
+    input: (sessionId, data) => call('terminal:input', sessionId, data),
+    resize: (sessionId, cols, rows) => call('terminal:resize', sessionId, cols, rows),
+    dispose: async (sessionId) => {
+      try {
+        await call('terminal:dispose', sessionId);
+      } finally {
+        terminalDataListeners.delete(sessionId);
+        terminalExitListeners.delete(sessionId);
+        terminalDataBuffers.delete(sessionId);
+        terminalExitBuffers.delete(sessionId);
+      }
+    },
+    onData: (sessionId, callback) => {
+      terminalDataListeners.set(sessionId, callback);
+      const buffered = terminalDataBuffers.get(sessionId);
+      if (buffered) {
+        terminalDataBuffers.delete(sessionId);
+        callback(buffered);
+      }
+      return () => terminalDataListeners.delete(sessionId);
+    },
+    onExit: (sessionId, callback) => {
+      terminalExitListeners.set(sessionId, callback);
+      const buffered = terminalExitBuffers.get(sessionId);
+      if (buffered) {
+        terminalExitBuffers.delete(sessionId);
+        callback(buffered);
+      }
+      return () => terminalExitListeners.delete(sessionId);
+    },
   },
   onFsEvents: (callback) => {
     const listener = (_event, events) => callback(events);

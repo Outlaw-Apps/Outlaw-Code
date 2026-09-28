@@ -24,4 +24,25 @@ export interface OutlawCodeGitBridge {
   diff(p: string): Promise<string>;
 }
 
+export interface TerminalSessionInfo {
+  id: string;
+  shellName: string;
+  cwd: string;
+}
+
+export interface TerminalExitEvent {
+  sessionId: string;
+  exitCode?: number;
+  signal?: number;
+}
+
+export interface OutlawCodeTerminalBridge {
+  create(cols: number, rows: number): Promise<TerminalSessionInfo>;
+  input(sessionId: string, data: string): Promise<void>;
+  resize(sessionId: string, cols: number, rows: number): Promise<void>;
+  dispose(sessionId: string): Promise<void>;
+  onData(sessionId: string, callback: (data: string) => void): () => void;
+  onExit(sessionId: string, callback: (event: TerminalExitEvent) => void): () => void;
+}
+
 /** The Window.outlawCode augmentation lives in src/vite-env.d.ts. */
