@@ -1,10 +1,10 @@
 /**
- * Shared helpers for importing local files / folders into the workspace
- * sandbox (`/home/user/app/...`).
+ * Shared helpers for importing local files / folders into a workspace.
  *
  * Used by FileExplorer, EditorLayout empty-state and the App File menu
  * (via `outlaw:import-files` / `outlaw:import-folder` custom events).
  */
+import type { FileSystemProvider } from './fs/types';
 
 export const WORKSPACE_ROOT = '/home/user/app';
 
@@ -34,11 +34,15 @@ function cleanSegment(seg: string): string {
  *   -> `/home/user/app/my-folder/src/App.tsx`
  * - Plain file picks only have `name` -> `/home/user/app/<name>`
  */
-export function toWorkspacePath(file: ImportableFile): string {
+function toRelativeWorkspacePath(file: ImportableFile): string {
   const rel = (file.webkitRelativePath || file.name || 'unnamed').replace(/\\/g, '/');
   const parts = rel.split('/').filter((p) => p && p !== '.' && p !== '..');
   const cleaned = parts.map(cleanSegment);
-  return `${WORKSPACE_ROOT}/${cleaned.join('/')}`;
+  return cleaned.join('/');
+}
+
+export function toWorkspacePath(file: ImportableFile, root = WORKSPACE_ROOT): string {
+  return `${root.replace(/[\\/]+$/, '')}/${toRelativeWorkspacePath(file)}`;
 }
 
 /** Directories + binaries we skip on import to keep the workspace sane. */
@@ -65,28 +69,30 @@ function shouldSkip(path: string, size: number): string | null {
 }
 
 /**
- * Write a FileList (from <input> or drag-drop DataTransfer) into the sandbox.
+ * Write a FileList (from <input> or drag-drop DataTransfer) into the workspace.
  * Returns imported paths so callers can refresh + auto-open the first file.
  */
 export async function importFileList(
-  sandbox: any,
+  provider: FileSystemProvider,
   list: FileList | File[] | null | undefined,
 ): Promise<ImportResult> {
   const result: ImportResult = { imported: [], skipped: [] };
-  if (!sandbox || !list) return result;
+  if (!provider || !list) return result;
+  const root = provider.root ?? WORKSPACE_ROOT;
 
   const files = Array.from(list).slice(0, MAX_TOTAL_FILES);
 
   for (const raw of files as ImportableFile[]) {
-    const dest = toWorkspacePath(raw);
-    const skipReason = shouldSkip(dest, raw.size);
+    const rel = toRelativeWorkspacePath(raw);
+    const skipReason = shouldSkip(`/${rel}`, raw.size);
     if (skipReason) {
       result.skipped.push({ name: raw.webkitRelativePath || raw.name, reason: skipReason });
       continue;
     }
+    const dest = `${root.replace(/[\\/]+$/, '')}/${rel}`;
     try {
       const text = await raw.text();
-      await sandbox.files.write(dest, text);
+      await provider.writeFile(dest, text);
       result.imported.push(dest);
     } catch (err) {
       result.skipped.push({
