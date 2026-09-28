@@ -14,6 +14,7 @@
     "electron:build:dir": "npm run build && electron-builder --win --x64 --dir",
     "lint": "npm run lint:types && npm run lint:js && npm run lint:css && npm run check:css-vars && npm run check:css-classes",
     "preview": "vite preview",
+    "test:electron": "node --test \"electron/*.test.cjs\"",
     "lint:css": "stylelint \"src/**/*.css\" --fix --quiet",
     "lint:js": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:types": "tsc --noEmit",
