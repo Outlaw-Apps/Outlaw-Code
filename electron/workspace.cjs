@@ -14,6 +14,10 @@ const MAX_READ_BYTES = 5 * 1024 * 1024;
 const MAX_SEARCH_BYTES = 5 * 1024 * 1024;
 const DEFAULT_MAX_RESULTS = 200;
 
+function toPosix(p) {
+  return path.sep === '\\' ? p.split('\\').join('/') : p;
+}
+
 class FsError extends Error {
   constructor(code, message) {
     super(message);
@@ -31,6 +35,7 @@ let watchRestartTimer = null;
 
 module.exports.MAX_ENTRIES = DEFAULT_MAX_ENTRIES;
 module.exports.FsError = FsError;
+module.exports.toPosix = toPosix;
 
 module.exports.setRoot = function setRoot(dir) {
   module.exports.stopWatch();
@@ -55,6 +60,9 @@ function isInsideRoot(candidate) {
  */
 module.exports.resolveInside = async function resolveInside(target) {
   if (!root) throw new FsError('EPERM', 'No folder is open');
+  if (path.win32.isAbsolute(target) && !path.isAbsolute(target)) {
+    throw new FsError('OUTSIDE_ROOT', `Path escapes workspace root: ${target}`);
+  }
   const abs = path.resolve(root, target);
   if (!isInsideRoot(abs)) throw new FsError('OUTSIDE_ROOT', `Path escapes workspace root: ${target}`);
   let existing = abs;
@@ -71,6 +79,7 @@ module.exports.resolveInside = async function resolveInside(target) {
 function mapFsError(err) {
   if (err instanceof FsError) return err;
   if (err.code === 'ENOENT') return new FsError('ENOENT', err.message);
+  if (err.code === 'EEXIST') return new FsError('EEXIST', err.message);
   if (err.code === 'EISDIR') return new FsError('EISDIR', err.message);
   if (err.code === 'EACCES' || err.code === 'EPERM') return new FsError('EACCES', err.message);
   return err;
@@ -90,7 +99,7 @@ module.exports.readDir = async function readDir(dirPath) {
     const full = path.join(abs, name);
     const stat = await fsp.stat(full).catch(() => null);
     if (!stat) continue;
-    entries.push({ name, path: full, kind: stat.isDirectory() ? 'dir' : 'file' });
+    entries.push({ name, path: toPosix(full), kind: stat.isDirectory() ? 'dir' : 'file' });
   }
   entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
   return { entries, capped };
@@ -126,11 +135,16 @@ module.exports.writeFile = async function writeFile(filePath, content) {
 module.exports.createEntry = async function createEntry(entryPath, kind) {
   const abs = await module.exports.resolveInside(entryPath);
   try {
+    const exists = await fsp.lstat(abs).then(() => true).catch((err) => {
+      if (err.code === 'ENOENT') return false;
+      throw err;
+    });
+    if (exists) throw new FsError('EEXIST', `A file or folder with that name already exists: ${entryPath}`);
     if (kind === 'dir') {
       await fsp.mkdir(abs, { recursive: true });
     } else {
       await fsp.mkdir(path.dirname(abs), { recursive: true });
-      await fsp.writeFile(abs, '', 'utf8');
+      await fsp.writeFile(abs, '', { encoding: 'utf8', flag: 'wx' });
     }
   } catch (err) {
     throw mapFsError(err);
@@ -141,6 +155,13 @@ module.exports.rename = async function rename(oldPath, newPath) {
   const absFrom = await module.exports.resolveInside(oldPath);
   const absTo = await module.exports.resolveInside(newPath);
   try {
+    if (absTo !== absFrom) {
+      const exists = await fsp.lstat(absTo).then(() => true).catch((err) => {
+        if (err.code === 'ENOENT') return false;
+        throw err;
+      });
+      if (exists) throw new FsError('EEXIST', `A file or folder with that name already exists: ${newPath}`);
+    }
     await fsp.mkdir(path.dirname(absTo), { recursive: true });
     await fsp.rename(absFrom, absTo);
   } catch (err) {
@@ -198,7 +219,7 @@ module.exports.search = async function search(query, maxResults = DEFAULT_MAX_RE
         const lower = lines[i].toLowerCase();
         const idx = lower.indexOf(needle);
         if (idx !== -1) {
-          results.push({ path: full, line: i + 1, lineText: lines[i].slice(0, 300), matchStart: idx, matchEnd: idx + query.length });
+          results.push({ path: toPosix(full), line: i + 1, lineText: lines[i].slice(0, 300), matchStart: idx, matchEnd: idx + query.length });
         }
       }
     }
@@ -215,7 +236,7 @@ function flushWatchEvents() {
     const events = [];
     for (const p of paths) {
       const exists = await fsp.lstat(p).then(() => true).catch(() => false);
-      events.push({ type: exists ? 'changed' : 'deleted', path: p });
+      events.push({ type: exists ? 'changed' : 'deleted', path: toPosix(p) });
     }
     if (watchCallback && events.length > 0) watchCallback(events);
   }, 300);

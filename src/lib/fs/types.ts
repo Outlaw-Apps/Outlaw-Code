@@ -42,7 +42,7 @@ export interface SearchResult {
   matchEnd: number;
 }
 
-export type FsErrorCode = 'ENOENT' | 'EISDIR' | 'OUTSIDE_ROOT' | 'EPERM' | 'EACCES';
+export type FsErrorCode = 'ENOENT' | 'EEXIST' | 'EISDIR' | 'OUTSIDE_ROOT' | 'EPERM' | 'EACCES';
 
 export class FsError extends Error {
   code: FsErrorCode;

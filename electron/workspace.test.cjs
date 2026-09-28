@@ -88,12 +88,37 @@ test('createEntry creates files and dirs', async (t) => {
   });
 });
 
+test('createEntry on an existing file preserves its content and throws EEXIST', async (t) => {
+  await withRoot(t, async () => {
+    await ws.writeFile('existing.txt', 'preserved');
+    await assert.rejects(() => ws.createEntry('existing.txt', 'file'), (err) => err.code === 'EEXIST');
+    assert.strictEqual(await ws.readFile('existing.txt'), 'preserved');
+  });
+});
+
+test('createEntry on an existing directory throws EEXIST', async (t) => {
+  await withRoot(t, async () => {
+    await ws.createEntry('existing', 'dir');
+    await assert.rejects(() => ws.createEntry('existing', 'dir'), (err) => err.code === 'EEXIST');
+  });
+});
+
 test('rename moves files and confines destination', async (t) => {
   await withRoot(t, async () => {
     await ws.writeFile('old.txt', 'data');
     await ws.rename('old.txt', 'sub/new.txt');
     assert.strictEqual(await ws.readFile('sub/new.txt'), 'data');
     await assert.rejects(() => ws.rename('sub/new.txt', '../escape.txt'), (err) => err.code === 'OUTSIDE_ROOT');
+  });
+});
+
+test('rename onto an existing file throws EEXIST and preserves both files', async (t) => {
+  await withRoot(t, async () => {
+    await ws.writeFile('source.txt', 'source');
+    await ws.writeFile('target.txt', 'target');
+    await assert.rejects(() => ws.rename('source.txt', 'target.txt'), (err) => err.code === 'EEXIST');
+    assert.strictEqual(await ws.readFile('source.txt'), 'source');
+    assert.strictEqual(await ws.readFile('target.txt'), 'target');
   });
 });
 

@@ -113,6 +113,8 @@
       "build/icon.ico",
       "electron/main.cjs",
       "electron/preload.cjs",
+      "electron/workspace.cjs",
+      "electron/git.cjs",
       "package.json",
       "!node_modules/**/*"
     ],

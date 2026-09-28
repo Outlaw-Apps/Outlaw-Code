@@ -309,7 +309,7 @@ function installFsIpc() {
       folder = result.filePaths[0];
     }
     workspace.setRoot(folder);
-    return folder;
+    return workspace.toPosix(folder);
   });
   handleAsync('fs:readDir', (p) => workspace.readDir(p));
   handleAsync('fs:readFile', (p) => workspace.readFile(p));
