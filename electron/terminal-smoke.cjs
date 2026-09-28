@@ -6,10 +6,12 @@ const TIMEOUT_MS = 15000;
 
 app.whenReady().then(() => {
   const manager = createTerminalManager({ pty: require('node-pty') });
-  const marker = `OUTLAW_${Date.now()}`;
+  const stateMarker = `OUTLAW_STATE_${Date.now()}`;
+  const interruptMarker = `OUTLAW_INTERRUPT_${Date.now()}`;
   let output = '';
   let settled = false;
   let shellName = 'PowerShell';
+  let phase = 'state';
 
   const finish = (code, message) => {
     if (settled) return;
@@ -27,9 +29,21 @@ app.whenReady().then(() => {
     rows: 30,
     onData: ({ data }) => {
       output += data;
-      if (output.includes(marker)) {
+      if (phase === 'state' && output.includes(stateMarker)) {
+        phase = 'interrupt';
+        output = '';
+        manager.write(info.id, 1, 'Start-Sleep -Seconds 30\r');
+        setTimeout(() => {
+          manager.write(info.id, 1, '\x03');
+          setTimeout(() => {
+            manager.write(info.id, 1, `Write-Output '${interruptMarker}'\r`);
+          }, 100);
+        }, 250);
+        return;
+      }
+      if (phase === 'interrupt' && output.includes(interruptMarker)) {
         clearTimeout(timer);
-        finish(0, `terminal smoke OK (${shellName})`);
+        finish(0, `terminal smoke OK (${shellName}; state + Ctrl+C)`);
       }
     },
     onExit: ({ exitCode }) => {
@@ -41,7 +55,7 @@ app.whenReady().then(() => {
   });
   shellName = info.shellName;
 
-  manager.write(info.id, 1, `$env:OUTLAW_SMOKE='${marker}'; Write-Output $env:OUTLAW_SMOKE\r`);
+  manager.write(info.id, 1, `$env:OUTLAW_SMOKE='${stateMarker}'; Write-Output $env:OUTLAW_SMOKE\r`);
 }).catch((error) => {
   console.error(error);
   app.exit(1);
