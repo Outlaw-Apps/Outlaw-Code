@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { createSandbox, connectSandbox } from './lib/sandbox';
 import { SimpleLogin } from './components/SimpleLogin';
 import { EditorLayout } from './components/EditorLayout';
@@ -13,17 +13,31 @@ import {
   FolderOpen,
   FileUp,
   FolderUp,
-  Sparkles
+  Sparkles,
+  Command as CommandIcon,
+  Files,
+  Search,
+  GitBranch,
+  Terminal as TerminalIcon,
+  FileText,
 } from 'lucide-react';
 import { requestImportFiles, requestImportFolder } from './lib/import-files';
 import { FsProvider, hasLocalFs, requestOpenFolder } from './lib/fs/context';
 import { getRecentFolders } from './lib/recent-folders';
+import { CommandPalette } from './components/CommandPalette';
+import {
+  emitWorkspaceCommand,
+  getAvailableCommands,
+  isWorkspaceCommand,
+  type AppCommandId,
+} from './lib/app-commands';
 import { Button } from './components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from './components/ui/dropdown-menu';
 
@@ -36,6 +50,7 @@ export default function App() {
   const [sandboxError, setSandboxError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [projectName, setProjectName] = useState<string>('Workspace');
 
   // Handle Project Selection from History
@@ -106,6 +121,38 @@ export default function App() {
     window.location.reload();
   };
 
+  const executeCommand = (command: AppCommandId) => {
+    if (isWorkspaceCommand(command)) {
+      emitWorkspaceCommand(command);
+      return;
+    }
+
+    switch (command) {
+      case 'file.openFolder':
+        if (hasLocalFs()) void openFolderHandler();
+        return;
+      case 'file.openHistory':
+        setShowHistory(true);
+        return;
+      case 'preferences.aiSettings':
+        setShowSettings(true);
+        return;
+    }
+  };
+
+  useEffect(() => {
+    const handleCommandPaletteShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'p') {
+        event.preventDefault();
+        setShowCommandPalette(true);
+      }
+    };
+    window.addEventListener('keydown', handleCommandPaletteShortcut);
+    return () => window.removeEventListener('keydown', handleCommandPaletteShortcut);
+  }, []);
+
+  const availableCommands = getAvailableCommands(hasLocalFs());
+
   if (!isAuthenticated) {
     return (
       <SimpleLogin
@@ -121,6 +168,13 @@ export default function App() {
     <div className="h-screen w-screen bg-[#18181b] text-foreground flex flex-col overflow-hidden font-sans select-none">
       {/* Settings Modal */}
       <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
+
+      <CommandPalette
+        open={showCommandPalette}
+        onOpenChange={setShowCommandPalette}
+        commands={availableCommands}
+        onExecute={executeCommand}
+      />
 
       {/* History Modal */}
       <HistoryModal
@@ -162,15 +216,16 @@ export default function App() {
                   <Plus size={13} />
                   New Project
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowHistory(true)} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                <DropdownMenuItem onClick={() => executeCommand('file.openHistory')} className="gap-2 cursor-pointer focus:bg-zinc-800">
                   <FolderPlus size={13} />
                   Open Project History...
                 </DropdownMenuItem>
                 {hasLocalFs() && (
                   <>
-                    <DropdownMenuItem onClick={() => void openFolderHandler()} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                    <DropdownMenuItem onClick={() => executeCommand('file.openFolder')} className="gap-2 cursor-pointer focus:bg-zinc-800">
                       <FolderOpen size={13} />
                       Open Folder...
+                      <DropdownMenuShortcut>Ctrl+Alt+O</DropdownMenuShortcut>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator className="bg-border/30" />
                   </>
@@ -199,12 +254,45 @@ export default function App() {
                   View
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="bg-[#202024] border-border/50 text-xs min-w-[170px]">
-                <DropdownMenuItem onClick={() => setShowHistory(true)} className="gap-2 cursor-pointer focus:bg-zinc-800">
+              <DropdownMenuContent align="start" className="bg-[#202024] border-border/50 text-xs min-w-[240px]">
+                <DropdownMenuItem onClick={() => setShowCommandPalette(true)} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <CommandIcon size={13} />
+                  Command Palette...
+                  <DropdownMenuShortcut>Ctrl+Shift+P</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="bg-border/30" />
+                <DropdownMenuItem onClick={() => executeCommand('view.explorer')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <Files size={13} />
+                  Explorer
+                  <DropdownMenuShortcut>Ctrl+Shift+E</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => executeCommand('view.search')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <Search size={13} />
+                  Search
+                  <DropdownMenuShortcut>Ctrl+Shift+F</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => executeCommand('view.sourceControl')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <GitBranch size={13} />
+                  Source Control
+                  <DropdownMenuShortcut>Ctrl+Shift+G</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="bg-border/30" />
+                <DropdownMenuItem onClick={() => executeCommand('view.terminal')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <TerminalIcon size={13} />
+                  Terminal
+                  <DropdownMenuShortcut>Ctrl+`</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => executeCommand('view.output')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <FileText size={13} />
+                  Output
+                  <DropdownMenuShortcut>Ctrl+Shift+U</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="bg-border/30" />
+                <DropdownMenuItem onClick={() => executeCommand('file.openHistory')} className="gap-2 cursor-pointer focus:bg-zinc-800">
                   <HistoryIcon size={13} />
                   Project History
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowSettings(true)} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                <DropdownMenuItem onClick={() => executeCommand('preferences.aiSettings')} className="gap-2 cursor-pointer focus:bg-zinc-800">
                   <Settings size={13} />
                   AI Settings
                 </DropdownMenuItem>
@@ -219,11 +307,11 @@ export default function App() {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="bg-[#202024] border-border/50 text-xs min-w-[180px]">
-                <DropdownMenuItem onClick={() => setShowSettings(true)} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                <DropdownMenuItem onClick={() => executeCommand('preferences.aiSettings')} className="gap-2 cursor-pointer focus:bg-zinc-800">
                   <Sparkles size={13} />
                   Configure AI Model...
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowSettings(true)} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                <DropdownMenuItem onClick={() => executeCommand('preferences.aiSettings')} className="gap-2 cursor-pointer focus:bg-zinc-800">
                   <Settings size={13} />
                   API Settings
                 </DropdownMenuItem>
