@@ -8,6 +8,16 @@ import {
   IMPORT_FOLDER_EVENT,
   importFileList,
 } from '../lib/import-files';
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+} from './ui/context-menu';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Input } from './ui/input';
+import { FilePlus, FolderPlus, Pencil, Trash2 } from 'lucide-react';
 import { useFs, useGit } from '../lib/fs/context';
 import type { FsEntry } from '../lib/fs/types';
 import type { GitFileEntry } from '../lib/git/types';
@@ -201,6 +211,72 @@ export function FileExplorer({ sandbox, onFileSelect, selectedFile, className, o
     setExpandedFolders(newExpanded);
   };
 
+  // Context-menu file operations (create / rename / delete via provider)
+  type PendingOp =
+    | { mode: 'new-file'; dir: string }
+    | { mode: 'new-dir'; dir: string }
+    | { mode: 'rename'; dir: string; originalName: string }
+    | null;
+
+  const [pendingOp, setPendingOp] = useState<PendingOp>(null);
+  const [opValue, setOpValue] = useState('');
+  const [opError, setOpError] = useState<string | null>(null);
+  const [opBusy, setOpBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const parentOf = (p: string) => {
+    const idx = p.lastIndexOf('/');
+    return idx > 0 ? p.slice(0, idx) : rootDir;
+  };
+
+  const joinPath = (dir: string, name: string) =>
+    `${dir.replace(/\/+$/, '')}/${name.replace(/^\/+/, '')}`;
+
+  const runPendingOp = async () => {
+    if (!pendingOp) return;
+    const name = opValue.trim();
+    if (!name) return;
+    const dir = pendingOp.dir;
+    setOpBusy(true);
+    setOpError(null);
+    try {
+      if (pendingOp.mode === 'rename') {
+        const oldPath = joinPath(dir, pendingOp.originalName);
+        const newPath = joinPath(dir, name);
+        await provider.rename(oldPath, newPath);
+        emitWorkspaceEvent({ type: 'renamed', oldPath, newPath });
+      } else if (pendingOp.mode === 'new-file') {
+        await provider.createEntry(joinPath(dir, name), 'file');
+        emitWorkspaceEvent({ type: 'tree-changed' });
+      } else if (pendingOp.mode === 'new-dir') {
+        await provider.createEntry(joinPath(dir, name), 'dir');
+        emitWorkspaceEvent({ type: 'tree-changed' });
+      }
+      setExpandedFolders((prev) => new Set([...prev, dir]));
+      setPendingOp(null);
+      setOpValue('');
+    } catch (err) {
+      setOpError(err instanceof Error ? err.message : 'Operation failed');
+    } finally {
+      setOpBusy(false);
+    }
+  };
+
+  const runDelete = async () => {
+    if (!confirmDelete) return;
+    setOpBusy(true);
+    setOpError(null);
+    try {
+      await provider.delete(confirmDelete);
+      emitWorkspaceEvent({ type: 'deleted', path: confirmDelete });
+      setConfirmDelete(null);
+    } catch (err) {
+      setOpError(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setOpBusy(false);
+    }
+  };
+
   const gitStatusColor = (path: string): string | undefined => {
     const rel = provider.root ? path.replace(`${provider.root}/`, '') : path;
     const entry = gitStatusMap[rel];
@@ -219,36 +295,79 @@ export function FileExplorer({ sandbox, onFileSelect, selectedFile, className, o
 
       return (
         <div key={node.path}>
-          <div
-            className={cn(
-              "flex items-center gap-1.5 py-1 px-2 cursor-pointer text-sm hover:bg-[#2a2a2a] transition-colors select-none",
-              isSelected && "bg-[#37373d] text-white",
-              !isSelected && "text-muted-foreground"
-            )}
-            style={{ paddingLeft: `${paddingLeft}px` }}
-            onClick={(e) => {
-              if (node.kind === 'dir') toggleFolder(node.path, e);
-              else onFileSelect(node.path);
-            }}
-          >
-            {node.kind === 'dir' ? (
-              <span className="flex items-center gap-1.5 overflow-hidden">
-                {isExpanded ? (
-                  <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-70" />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5 shrink-0 opacity-70" />
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <div
+                className={cn(
+                  "flex items-center gap-1.5 py-1 px-2 cursor-pointer text-sm hover:bg-[#2a2a2a] transition-colors select-none",
+                  isSelected && "bg-[#37373d] text-white",
+                  !isSelected && "text-muted-foreground"
                 )}
-                <Folder className={cn("w-3.5 h-3.5 shrink-0", isExpanded ? "text-blue-400" : "text-blue-300")} />
-                <span className="truncate">{node.name}</span>
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5 overflow-hidden">
-                <span className="w-3.5" /> {/* Spacer for alignment */}
-                <FileIcon className="w-3.5 h-3.5 shrink-0 opacity-70" />
-                <span className={cn("truncate", gitStatusColor(node.path))}>{node.name}</span>
-              </span>
-            )}
-          </div>
+                style={{ paddingLeft: `${paddingLeft}px` }}
+                onClick={(e) => {
+                  if (node.kind === 'dir') toggleFolder(node.path, e);
+                  else onFileSelect(node.path);
+                }}
+              >
+                {node.kind === 'dir' ? (
+                  <span className="flex items-center gap-1.5 overflow-hidden">
+                    {isExpanded ? (
+                      <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                    )}
+                    <Folder className={cn("w-3.5 h-3.5 shrink-0", isExpanded ? "text-blue-400" : "text-blue-300")} />
+                    <span className="truncate">{node.name}</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 overflow-hidden">
+                    <span className="w-3.5" /> {/* Spacer for alignment */}
+                    <FileIcon className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                    <span className={cn("truncate", gitStatusColor(node.path))}>{node.name}</span>
+                  </span>
+                )}
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="text-xs">
+              <ContextMenuItem
+                className="gap-2 cursor-pointer"
+                onSelect={() => {
+                  setPendingOp({ mode: 'new-file', dir: node.kind === 'dir' ? node.path : parentOf(node.path) });
+                  setOpValue('');
+                  setOpError(null);
+                }}
+              >
+                <FilePlus size={12} /> New File...
+              </ContextMenuItem>
+              <ContextMenuItem
+                className="gap-2 cursor-pointer"
+                onSelect={() => {
+                  setPendingOp({ mode: 'new-dir', dir: node.kind === 'dir' ? node.path : parentOf(node.path) });
+                  setOpValue('');
+                  setOpError(null);
+                }}
+              >
+                <FolderPlus size={12} /> New Folder...
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                className="gap-2 cursor-pointer"
+                onSelect={() => {
+                  setPendingOp({ mode: 'rename', dir: parentOf(node.path), originalName: node.name });
+                  setOpValue(node.name);
+                  setOpError(null);
+                }}
+              >
+                <Pencil size={12} /> Rename...
+              </ContextMenuItem>
+              <ContextMenuItem
+                className="gap-2 cursor-pointer text-red-400"
+                onSelect={() => setConfirmDelete(node.path)}
+              >
+                <Trash2 size={12} /> Delete
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
           {node.kind === 'dir' && isExpanded && (
             <div>
               {children ? (
@@ -380,6 +499,51 @@ export function FileExplorer({ sandbox, onFileSelect, selectedFile, className, o
           )}
         </div>
       </ScrollArea>
+
+      {/* Create / rename dialog */}
+      <Dialog open={pendingOp !== null} onOpenChange={(open) => { if (!open) setPendingOp(null); }}>
+        <DialogContent className="max-w-sm bg-[#1c1c1f] border-border/50">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
+              {pendingOp?.mode === 'rename' ? 'Rename' : pendingOp?.mode === 'new-dir' ? 'New Folder' : 'New File'}
+            </DialogTitle>
+          </DialogHeader>
+          {opError && <p className="text-xs text-red-400">{opError}</p>}
+          <Input
+            autoFocus
+            value={opValue}
+            onChange={(e) => setOpValue(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void runPendingOp(); }}
+            placeholder="name"
+            className="text-xs"
+          />
+          <DialogFooter>
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setPendingOp(null)}>Cancel</Button>
+            <Button size="sm" className="h-7 text-xs" disabled={opBusy || !opValue.trim()} onClick={() => void runPendingOp()}>
+              {opBusy ? 'Working...' : pendingOp?.mode === 'rename' ? 'Rename' : 'Create'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation */}
+      <Dialog open={confirmDelete !== null} onOpenChange={(open) => { if (!open) setConfirmDelete(null); }}>
+        <DialogContent className="max-w-sm bg-[#1c1c1f] border-border/50">
+          <DialogHeader>
+            <DialogTitle className="text-sm">Delete</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground break-all">
+            Delete <span className="text-foreground font-mono">{confirmDelete}</span>? This cannot be undone.
+          </p>
+          {opError && <p className="text-xs text-red-400">{opError}</p>}
+          <DialogFooter>
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+            <Button variant="destructive" size="sm" className="h-7 text-xs" disabled={opBusy} onClick={() => void runDelete()}>
+              {opBusy ? 'Deleting...' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Drag-drop overlay */}
       {isDragOver && (
