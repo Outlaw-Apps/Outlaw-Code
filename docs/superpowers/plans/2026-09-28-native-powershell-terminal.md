@@ -6,7 +6,7 @@
 
 **Architecture:** A testable main-process terminal manager owns `node-pty` sessions and scopes each session to its Electron renderer. A narrow preload bridge carries terminal input, resize requests, streamed output, and exit events; the renderer uses `@xterm/xterm` and `@xterm/addon-fit`, while the existing sandbox terminal remains browser-only.
 
-**Tech Stack:** Electron 39, CommonJS main/preload modules, `node-pty` 1.1.0, `@xterm/xterm` 6.0.0, `@xterm/addon-fit` 0.11.0, React 19, TypeScript 5.9, Node's built-in test runner, electron-builder 26.
+**Tech Stack:** Electron 39, CommonJS main/preload modules, `node-pty` 1.1.0 N-API prebuilds, `@xterm/xterm` 6.0.0, `@xterm/addon-fit` 0.11.0, React 19, TypeScript 5.9, Node's built-in test runner, electron-builder 26.
 
 **Prerequisite:** The approved design is `docs/superpowers/specs/2026-09-28-powershell-command-palette-design.md`. Work in the `codex/powershell-command-palette` branch/worktree, not `main`.
 
@@ -25,7 +25,7 @@
 - Create `src/components/NativeTerminal.tsx`: xterm lifecycle, PTY I/O, fit/resize, restart, and terminate controls.
 - Modify `src/components/TerminalPanel.tsx`: choose native Electron or browser fallback renderer.
 - Modify `src/index.css`: import xterm's stylesheet and constrain its viewport.
-- Modify `package.json` and `package-lock.json`: dependencies, native rebuild hook, smoke script, and packaging rules.
+- Modify `package.json` and `package-lock.json`: dependencies, verified N-API prebuild policy, smoke script, and packaging rules.
 
 ---
 
@@ -45,16 +45,21 @@ npm install node-pty@1.1.0 @xterm/xterm@6.0.0 @xterm/addon-fit@0.11.0 --legacy-p
 
 Expected: `package.json` and `package-lock.json` change; the three packages appear under `dependencies`.
 
-- [ ] **Step 2: Add native rebuild and smoke scripts**
+- [ ] **Step 2: Add the smoke script and preserve the verified N-API prebuild**
 
-Update the `scripts` object in `package.json` so it includes these entries without removing the existing scripts:
+Update the `scripts` object in `package.json` so it includes this entry without removing the existing scripts:
 
 ```json
-"postinstall": "electron-builder install-app-deps",
 "test:terminal-smoke": "electron electron/terminal-smoke.cjs"
 ```
 
-Why: `node-pty` contains a native `.node` binary. `install-app-deps` rebuilds it for Electron's ABI instead of the system Node ABI.
+Add this property to the `build` object:
+
+```json
+"npmRebuild": false
+```
+
+Why: `node-pty` 1.1.0 ships a Windows x64 N-API prebuild that loads under both Node and Electron 39. Rebuilding it from source is unnecessary and fails on machines without Visual Studio's optional Spectre-mitigated libraries.
 
 - [ ] **Step 3: Add terminal runtime files to electron-builder**
 
@@ -77,15 +82,17 @@ The final relevant part of `build` must also include:
 
 Keep the existing installer, icon, and Windows target configuration unchanged.
 
-- [ ] **Step 4: Rebuild the native dependency for Electron**
+- [ ] **Step 4: Verify the shipped native prebuild under Electron**
 
-Run:
+Run the Electron executable in its Node-compatible mode:
 
 ```powershell
-npm run postinstall
+$env:ELECTRON_RUN_AS_NODE='1'
+& '.\node_modules\electron\dist\electron.exe' -e "const p=require('node-pty'); console.log('electron node-pty OK', typeof p.spawn, process.versions.electron, process.versions.napi)"
+Remove-Item Env:ELECTRON_RUN_AS_NODE
 ```
 
-Expected: electron-builder reports that native dependencies were installed or rebuilt for Electron 39 on Windows x64.
+Expected: prints `electron node-pty OK function 39.8.10 10` (the patch version may be newer). This directly proves the shipped N-API binary loads in Electron.
 
 - [ ] **Step 5: Verify the dependency tree and JSON syntax**
 
