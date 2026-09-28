@@ -26,6 +26,10 @@ export interface StubSandbox {
   files: {
     write: (path: string, content: string) => Promise<void>;
     read: (path: string) => Promise<string>;
+    list: () => Promise<string[]>;
+    remove: (path: string) => Promise<void>;
+    rename: (from: string, to: string) => Promise<void>;
+    exists: (path: string) => Promise<boolean>;
   };
 }
 
@@ -66,6 +70,21 @@ export async function createSandbox(): Promise<StubSandbox> {
       },
       async read(path: string) {
         return files.get(path) ?? '';
+      },
+      async list() {
+        return [...files.keys()];
+      },
+      async remove(path: string) {
+        files.delete(path);
+      },
+      async rename(from: string, to: string) {
+        const content = files.get(from);
+        if (content === undefined) throw new Error(`ENOENT: ${from}`);
+        files.delete(from);
+        files.set(to, content);
+      },
+      async exists(path: string) {
+        return files.has(path);
       },
     },
   };

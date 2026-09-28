@@ -1,10 +1,11 @@
 /**
- * Shared helpers for importing local files / folders into the workspace
- * sandbox (`/home/user/app/...`).
+ * Shared helpers for importing local files / folders into a workspace.
  *
  * Used by FileExplorer, EditorLayout empty-state and the App File menu
  * (via `outlaw:import-files` / `outlaw:import-folder` custom events).
  */
+import type { FileSystemProvider } from './fs/types';
+import { joinPath } from './fs/paths';
 
 export const WORKSPACE_ROOT = '/home/user/app';
 
@@ -28,17 +29,22 @@ function cleanSegment(seg: string): string {
   return seg.replace(/[^a-zA-Z0-9._\-+@()[\]{} ]/g, '_').trim() || 'unnamed';
 }
 
+function cleanedSegments(file: ImportableFile): string[] {
+  const rel = (file.webkitRelativePath || file.name || 'unnamed').replace(/\\/g, '/');
+  return rel
+    .split('/')
+    .filter((part) => part && part !== '.' && part !== '..')
+    .map(cleanSegment);
+}
+
 /**
  * Resolve the destination sandbox path for a picked file.
  * - Folder picks provide `webkitRelativePath` like `my-folder/src/App.tsx`
  *   -> `/home/user/app/my-folder/src/App.tsx`
  * - Plain file picks only have `name` -> `/home/user/app/<name>`
  */
-export function toWorkspacePath(file: ImportableFile): string {
-  const rel = (file.webkitRelativePath || file.name || 'unnamed').replace(/\\/g, '/');
-  const parts = rel.split('/').filter((p) => p && p !== '.' && p !== '..');
-  const cleaned = parts.map(cleanSegment);
-  return `${WORKSPACE_ROOT}/${cleaned.join('/')}`;
+export function toWorkspacePath(file: ImportableFile, root = WORKSPACE_ROOT): string {
+  return joinPath(root, ...cleanedSegments(file));
 }
 
 /** Directories + binaries we skip on import to keep the workspace sane. */
@@ -52,7 +58,7 @@ export interface ImportResult {
 }
 
 function shouldSkip(path: string, size: number): string | null {
-  const lower = path.toLowerCase();
+  const lower = path.replace(/\\/g, '/').toLowerCase();
   if (SKIPPED_DIRS.some((d) => lower.includes(`/${d}/`) || lower.endsWith(`/${d}`))) {
     return 'system directory (node_modules/.git/dist/...)';
   }
@@ -65,28 +71,30 @@ function shouldSkip(path: string, size: number): string | null {
 }
 
 /**
- * Write a FileList (from <input> or drag-drop DataTransfer) into the sandbox.
+ * Write a FileList (from <input> or drag-drop DataTransfer) into the workspace.
  * Returns imported paths so callers can refresh + auto-open the first file.
  */
 export async function importFileList(
-  sandbox: any,
+  provider: FileSystemProvider,
   list: FileList | File[] | null | undefined,
 ): Promise<ImportResult> {
   const result: ImportResult = { imported: [], skipped: [] };
-  if (!sandbox || !list) return result;
+  const root = provider.root;
+  if (!root || !list) return result;
 
   const files = Array.from(list).slice(0, MAX_TOTAL_FILES);
 
   for (const raw of files as ImportableFile[]) {
-    const dest = toWorkspacePath(raw);
-    const skipReason = shouldSkip(dest, raw.size);
+    const rel = `/${cleanedSegments(raw).join('/')}`;
+    const skipReason = shouldSkip(rel, raw.size);
     if (skipReason) {
       result.skipped.push({ name: raw.webkitRelativePath || raw.name, reason: skipReason });
       continue;
     }
+    const dest = toWorkspacePath(raw, root);
     try {
       const text = await raw.text();
-      await sandbox.files.write(dest, text);
+      await provider.writeFile(dest, text);
       result.imported.push(dest);
     } catch (err) {
       result.skipped.push({

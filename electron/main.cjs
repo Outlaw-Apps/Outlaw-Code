@@ -1,7 +1,9 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, dialog } = require('electron');
 const crypto = require('crypto');
 const http = require('http');
 const path = require('path');
+const workspace = require('./workspace.cjs');
+const git = require('./git.cjs');
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const AI_PROXY_PREFIX = '/api/openai';
@@ -246,9 +248,11 @@ function startAiProxyServer() {
   });
 }
 
+let mainWindow = null;
+
 function createMainWindow(aiProxyBaseURL, aiProxyToken) {
   const iconPath = path.join(__dirname, '..', 'build', 'icon.ico');
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 960,
@@ -282,9 +286,59 @@ function createMainWindow(aiProxyBaseURL, aiProxyToken) {
   mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 }
 
+/**
+ * Wrap ipcMain.handle so every channel returns a serializable
+ * { ok, value | error } envelope; FsError codes survive the bridge.
+ */
+function handleAsync(channel, fn) {
+  ipcMain.handle(channel, async (_event, ...args) => {
+    try {
+      return { ok: true, value: await fn(...args) };
+    } catch (err) {
+      return { ok: false, error: { code: err.code || 'EPERM', message: err instanceof Error ? err.message : String(err) } };
+    }
+  });
+}
+
+function installFsIpc() {
+  handleAsync('fs:openFolder', async (preselected) => {
+    let folder = typeof preselected === 'string' && preselected ? preselected : null;
+    if (!folder) {
+      const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+      if (result.canceled || !result.filePaths[0]) return null;
+      folder = result.filePaths[0];
+    }
+    workspace.setRoot(folder);
+    return workspace.toPosix(folder);
+  });
+  handleAsync('fs:readDir', (p) => workspace.readDir(p));
+  handleAsync('fs:readFile', (p) => workspace.readFile(p));
+  handleAsync('fs:writeFile', (p, content) => workspace.writeFile(p, content));
+  handleAsync('fs:createEntry', (p, kind) => workspace.createEntry(p, kind));
+  handleAsync('fs:rename', (from, to) => workspace.rename(from, to));
+  handleAsync('fs:delete', (p) => workspace.delete(p));
+  handleAsync('fs:search', (query, maxResults) => workspace.search(query, maxResults));
+  handleAsync('fs:watch', () => {
+    workspace.watch((events) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('fs:watch:event', events);
+      }
+    });
+  });
+  handleAsync('fs:unwatch', () => workspace.stopWatch());
+  handleAsync('git:available', () => git.isAvailable());
+  handleAsync('git:status', () => (workspace.getRoot() ? git.status(workspace.getRoot()) : null));
+  handleAsync('git:stage', (paths) => git.stage(workspace.getRoot(), paths));
+  handleAsync('git:unstage', (paths) => git.unstage(workspace.getRoot(), paths));
+  handleAsync('git:commit', (message) => git.commit(workspace.getRoot(), message));
+  handleAsync('git:discard', (paths) => git.discard(workspace.getRoot(), paths));
+  handleAsync('git:diff', (p) => git.diff(workspace.getRoot(), p));
+}
+
 app.whenReady().then(async () => {
   aiProxyServer = await startAiProxyServer();
   createMainWindow(aiProxyServer.baseURL, aiProxyServer.token);
+  installFsIpc();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

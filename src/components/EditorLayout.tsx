@@ -8,6 +8,10 @@ import {
 import { cn } from '../lib/utils';
 import { requestImportFiles, requestImportFolder, IMPORT_FILES_EVENT, IMPORT_FOLDER_EVENT } from '../lib/import-files';
 import { ActivityBar, type ActivityView } from './ActivityBar';
+import { useFs, useGit, useWorkspace } from '../lib/fs/context';
+import { FsError } from '../lib/fs/types';
+import { onWorkspaceEvent } from '../lib/workspace-events';
+import type { GitStatus } from '../lib/git/types';
 import { FileExplorer } from './FileExplorer';
 import { EditorTabs, type TabItem } from './EditorTabs';
 import { InlineAIWidget } from './InlineAIWidget';
@@ -20,6 +24,7 @@ interface EditorLayoutProps {
   sandbox: any | null;
   initialPrompt?: string | null;
   onOpenSettings?: () => void;
+  onOpenFolder?: (preselected?: string) => void;
 }
 
 function getLanguage(path: string | null): string {
@@ -33,9 +38,6 @@ function getLanguage(path: string | null): string {
   return map[ext || ''] || 'plaintext';
 }
 
-/** Safely escape a filesystem path for use in single-quoted shell arguments. */
-const shellEscape = (path: string) => `'${path.replace(/'/g, "'\\''")}'`;
-
 export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorLayoutProps) {
   // Activity Bar & Sidebar State
   const [activeActivityView, setActiveActivityView] = useState<ActivityView>('explorer');
@@ -47,8 +49,8 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<{ path: string; line: number; text: string }[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [gitStatusOutput, setGitStatusOutput] = useState<string>('');
-  const [isLoadingGit, setIsLoadingGit] = useState(false);
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  const [gitAvailable, setGitAvailable] = useState<boolean | null>(null);
 
   // Multi-Tab & File Buffers State
   const [openTabs, setOpenTabs] = useState<TabItem[]>([]);
@@ -85,8 +87,42 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
   activeFilePathRef.current = activeFilePath;
   const fileBuffersRef = useRef<Record<string, string>>({});
   fileBuffersRef.current = fileBuffers;
+  const openTabsRef = useRef<TabItem[]>([]);
+  openTabsRef.current = openTabs;
 
-  // Clear workspace when switching sandboxes
+  const provider = useFs();
+  const git = useGit();
+  const { openFolder, setSwitchGuard, workspace } = useWorkspace();
+  const [notice, setNotice] = useState<string | null>(null);
+  const notify = useCallback((message: string) => {
+    setNotice(message);
+    setTimeout(() => setNotice((prev) => (prev === message ? null : prev)), 4000);
+  }, []);
+
+  const refreshGitStatus = useCallback(async () => {
+    if (gitAvailable === false) return;
+    try {
+      const available = gitAvailable ?? await git.available();
+      setGitAvailable(available);
+      if (!available) return;
+      setGitStatus(await git.status());
+    } catch {
+      setGitStatus(null);
+    }
+  }, [git, gitAvailable]);
+
+  const confirmFolderSwitch = useCallback(() => {
+    const dirtyCount = openTabsRef.current.filter((tab) => tab.isDirty).length;
+    return dirtyCount === 0 ||
+      window.confirm(`Discard unsaved changes in ${dirtyCount} file(s) and open another folder?`);
+  }, []);
+
+  useEffect(() => {
+    setSwitchGuard(confirmFolderSwitch);
+    return () => setSwitchGuard(null);
+  }, [confirmFolderSwitch, setSwitchGuard]);
+
+  // Clear workspace when switching sandboxes or folders.
   useEffect(() => {
     setOpenTabs([]);
     setActiveFilePath(null);
@@ -94,7 +130,10 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     setOriginalFileBuffers({});
     setIsLoadingFile(false);
     setSelectedText('');
-  }, [sandbox?.id]);
+    setGitStatus(null);
+    setSearchResults([]);
+    setGitAvailable(null);
+  }, [sandbox?.id, workspace?.root]);
 
   // Import entries from the top-level File menu / empty state: make sure the
   // Explorer (which owns the file/folder pickers) is visible, then forward
@@ -116,11 +155,8 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     };
   }, []);
 
-  // Load a file from sandbox into tabs
+  // Load a file from the workspace provider into tabs
   const loadFile = useCallback(async (path: string) => {
-    const sb = sandboxRef.current;
-    if (!sb) return;
-
     // If file is already open in buffers, just activate it
     if (fileBuffersRef.current[path] !== undefined) {
       setActiveFilePath(path);
@@ -129,8 +165,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
 
     setIsLoadingFile(true);
     try {
-      const { stdout } = await sb.commands.run(`cat ${shellEscape(path)}`);
-      const content = stdout ?? '';
+      const content = await provider.readFile(path);
       setFileBuffers((prev) => ({ ...prev, [path]: content }));
       setOriginalFileBuffers((prev) => ({ ...prev, [path]: content }));
       setOpenTabs((prev) => {
@@ -139,42 +174,42 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
       });
       setActiveFilePath(path);
     } catch (err) {
-      console.error('Failed to read file:', err);
-      const fallback = '// Failed to read file content';
-      setFileBuffers((prev) => ({ ...prev, [path]: fallback }));
-      setOriginalFileBuffers((prev) => ({ ...prev, [path]: fallback }));
-      setOpenTabs((prev) => {
-        if (prev.some((t) => t.path === path)) return prev;
-        return [...prev, { path, isDirty: false }];
-      });
-      setActiveFilePath(path);
+      if (err instanceof FsError && err.code === 'ENOENT') {
+        notify(`File not found: ${path}`);
+      } else {
+        console.error('Failed to read file:', err);
+        notify(`Could not open ${path}`);
+      }
     } finally {
       setIsLoadingFile(false);
     }
-  }, []);
+  }, [provider, notify]);
 
-  // Auto-open primary file (App.tsx or index.html) when sandbox connects
+  // Auto-open a primary file (App.tsx / main.tsx / any file) on connect
   useEffect(() => {
-    if (sandbox && openTabs.length === 0) {
+    const root = provider.root;
+    if (root && openTabs.length === 0) {
       const tryOpenDefault = async () => {
         try {
-          const { stdout } = await sandbox.commands.run('find /home/user/app/src -maxdepth 2 -name "App.tsx" -o -name "App.jsx" -o -name "main.tsx"');
-          const found = stdout?.trim().split('\n')[0];
-          if (found) {
-            loadFile(found);
-          } else {
-            // Fallback to find any file in app
-            const { stdout: anyFile } = await sandbox.commands.run('find /home/user/app -maxdepth 2 -type f -not -path "*/.*" -not -path "*/node_modules/*"');
-            const first = anyFile?.trim().split('\n')[0];
-            if (first) loadFile(first);
+          const { entries } = await provider.readDir(root);
+          const srcDir = entries.find((e) => e.kind === 'dir' && e.name === 'src');
+          if (srcDir) {
+            const src = await provider.readDir(srcDir.path);
+            const entry = src.entries.find((e) => ['App.tsx', 'App.jsx', 'main.tsx', 'index.tsx'].includes(e.name));
+            if (entry) {
+              void loadFile(entry.path);
+              return;
+            }
           }
+          const firstFile = entries.find((e) => e.kind === 'file' && !e.name.startsWith('.'));
+          if (firstFile) void loadFile(firstFile.path);
         } catch (e) {
-          console.error("Could not find default file:", e);
+          console.error('Could not find default file:', e);
         }
       };
-      tryOpenDefault();
+      void tryOpenDefault();
     }
-  }, [sandbox, openTabs.length, loadFile]);
+  }, [provider, openTabs.length, loadFile, workspace?.root]);
 
   // Handle Tab Selection
   const handleSelectTab = (path: string) => {
@@ -213,29 +248,30 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     );
   };
 
-  // Save current active file to sandbox
+  // Save current active file through the workspace provider
   const saveActiveFile = useCallback(async () => {
-    const sb = sandboxRef.current;
     const path = activeFilePathRef.current;
-    if (!sb || !path) return;
+    if (!path) return;
     const content = fileBuffersRef.current[path];
     if (content === undefined) return;
 
     setIsSaving(true);
     try {
-      await sb.files.write(path, content);
+      await provider.writeFile(path, content);
       setOriginalFileBuffers((prev) => ({ ...prev, [path]: content }));
       setOpenTabs((prev) =>
         prev.map((t) => (t.path === path ? { ...t, isDirty: false } : t))
       );
       setBuildLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Saved ${path}`]);
+      await refreshGitStatus();
     } catch (err) {
       console.error('Failed to save file:', err);
       setBuildLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Error saving ${path}: ${err}`]);
+      notify(`Could not save ${path.split('/').pop()} - your edits are kept in the editor`);
     } finally {
       setIsSaving(false);
     }
-  }, []);
+  }, [provider, notify, refreshGitStatus]);
 
   // Handle Code Replacement from Inline AI or Chat
   const handleApplyCode = (replacement: string) => {
@@ -287,11 +323,16 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
         e.preventDefault();
         setAiPanelOpen((prev) => !prev);
       }
+      // Ctrl+Alt+O: Open Folder (Electron local workspace)
+      if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        void openFolder();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [saveActiveFile]);
+  }, [saveActiveFile, openFolder]);
 
   // Sidebar drag resizing
   const startResizingSidebar = useCallback((e: React.MouseEvent) => {
@@ -344,46 +385,82 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     };
   }, [isResizingSidebar, isResizingChat, isResizingBottom]);
 
-  // Handle Workspace Search
+  // Handle Workspace Search (through the workspace provider)
   const handleRunSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim() || !sandbox) return;
+    if (!searchQuery.trim()) return;
     setIsSearching(true);
     try {
-      const { stdout } = await sandbox.commands.run(`grep -rnI --max-count=50 ${shellEscape(searchQuery)} /home/user/app/src`);
-      if (!stdout) {
-        setSearchResults([]);
-      } else {
-        const lines = stdout.trim().split('\n');
-        const parsed = lines.map((l: string) => {
-          const match = l.match(/^([^:]+):(\d+):(.*)$/);
-          if (match) {
-            return { path: match[1], line: parseInt(match[2]), text: match[3].trim() };
-          }
-          return { path: 'result', line: 1, text: l };
-        });
-        setSearchResults(parsed);
-      }
+      const results = await provider.search({ query: searchQuery, maxResults: 200 });
+      setSearchResults(results.map((r) => ({ path: r.path, line: r.line, text: r.lineText.trim() })));
     } catch (err) {
+      console.error('Search failed:', err);
       setSearchResults([]);
     } finally {
       setIsSearching(false);
     }
   };
 
-  // Fetch Git status when git tab is opened
+  // Fetch structured git status when the git view is opened or workspace changes.
   useEffect(() => {
-    if (activeActivityView === 'git' && sandbox) {
-      setIsLoadingGit(true);
-      sandbox.commands.run('git status --short').then((res: any) => {
-        setGitStatusOutput(res.stdout || 'Working tree clean.');
-      }).catch(() => {
-        setGitStatusOutput('Unable to inspect git status.');
-      }).finally(() => {
-        setIsLoadingGit(false);
-      });
-    }
-  }, [activeActivityView, sandbox]);
+    if (activeActivityView !== 'git') return;
+    void refreshGitStatus();
+    return onWorkspaceEvent(() => void refreshGitStatus());
+  }, [activeActivityView, refreshGitStatus, workspace?.root]);
+
+  // Keep open tabs in sync with explorer operations.
+  useEffect(() => {
+    const off = onWorkspaceEvent((event) => {
+      if (event.type === 'renamed') {
+        const { oldPath, newPath } = event;
+        setOpenTabs((prev) => prev.map((t) => (t.path === oldPath ? { ...t, path: newPath } : t)));
+        setFileBuffers((prev) => {
+          if (!(oldPath in prev)) return prev;
+          const { [oldPath]: content, ...rest } = prev;
+          return { ...rest, [newPath]: content };
+        });
+        setOriginalFileBuffers((prev) => {
+          if (!(oldPath in prev)) return prev;
+          const { [oldPath]: content, ...rest } = prev;
+          return { ...rest, [newPath]: content };
+        });
+        setActiveFilePath((prev) => (prev === oldPath ? newPath : prev));
+      }
+      if (event.type === 'deleted') {
+        const { path } = event;
+        setOpenTabs((prev) => prev.filter((t) => t.path !== path && !t.path.startsWith(`${path}/`)));
+        setFileBuffers((prev) => Object.fromEntries(Object.entries(prev).filter(([p]) => p !== path && !p.startsWith(`${path}/`))));
+        setActiveFilePath((prev) => (prev === path ? null : prev));
+      }
+    });
+    return off;
+  }, []);
+
+  // React to external file changes from the provider watch.
+  useEffect(() => {
+    const off = onWorkspaceEvent(async (event) => {
+      if (event.type !== 'files-changed') return;
+      for (const path of event.paths) {
+        const buffer = fileBuffersRef.current[path];
+        if (buffer === undefined) continue;
+        const isDirty = openTabsRef.current.find((t) => t.path === path)?.isDirty ?? false;
+        if (isDirty) {
+          notify(`${path.split('/').pop()} changed on disk - your edits are kept`);
+          continue;
+        }
+        try {
+          const fresh = await provider.readFile(path);
+          if (fresh === fileBuffersRef.current[path]) continue;
+          setFileBuffers((prev) => ({ ...prev, [path]: fresh }));
+          setOriginalFileBuffers((prev) => ({ ...prev, [path]: fresh }));
+          notify(`${path.split('/').pop()} reloaded from disk`);
+        } catch {
+          /* file vanished; the deleted handler covers it */
+        }
+      }
+    });
+    return off;
+  }, [provider, notify]);
 
   const currentFileContent = activeFilePath ? fileBuffers[activeFilePath] ?? '' : '';
   const currentTabItem = openTabs.find((t) => t.path === activeFilePath);
@@ -413,7 +490,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
             {/* Explorer View */}
             {activeActivityView === 'explorer' && (
               <FileExplorer
-                sandbox={sandbox}
+                key={provider.root ?? 'virtual'}
                 selectedFile={activeFilePath}
                 onFileSelect={(path) => loadFile(path)}
                 onImportComplete={handleImportComplete}
@@ -464,8 +541,29 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
                   <GitBranch size={13} className="text-[#007acc]" />
                   Source Control
                 </div>
-                <div className="flex-1 overflow-y-auto bg-[#18181b] p-2.5 rounded border border-border/30 text-zinc-300 text-[11px] whitespace-pre-wrap">
-                  {isLoadingGit ? 'Checking git status...' : gitStatusOutput}
+                <div className="flex-1 overflow-y-auto bg-[#18181b] p-2.5 rounded border border-border/30 text-zinc-300 text-[11px] space-y-1">
+                  {gitAvailable === null && 'Checking git status...'}
+                  {gitAvailable === false && 'Source control is not available in this workspace.'}
+                  {gitAvailable && gitStatus && (
+                    <>
+                      <div className="text-[#007acc] font-sans font-medium pb-1">
+                        {gitStatus.branch ?? '(detached)'}
+                        {gitStatus.clean && <span className="text-muted-foreground font-normal"> - working tree clean</span>}
+                      </div>
+                      {gitStatus.files.map((f) => (
+                        <div key={f.path} className="flex items-center gap-1.5">
+                          <span
+                            className={
+                              f.status === 'untracked' ? 'text-green-400' : f.staged ? 'text-green-500' : 'text-amber-400'
+                            }
+                          >
+                            {f.status === 'untracked' ? 'U' : f.status[0].toUpperCase()}
+                          </span>
+                          <span className="truncate">{f.path}</span>
+                        </div>
+                      ))}
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -553,6 +651,12 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
               fullFileContent={currentFileContent}
               onAccept={handleApplyCode}
             />
+
+            {notice && (
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 bg-[#1c1c1f] border border-border/50 rounded px-3 py-1.5 text-[11px] text-zinc-300 shadow-lg">
+                {notice}
+              </div>
+            )}
 
             {isLoadingFile ? (
               <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
@@ -685,7 +789,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1 hover:bg-black/10 px-1.5 py-0.5 rounded cursor-pointer">
             <GitBranch size={11} />
-            <span>main*</span>
+            <span>{gitStatus?.branch ?? 'no-git'}</span>
           </div>
           {activeFilePath && (
             <span className="opacity-80 truncate max-w-[300px]">{activeFilePath}</span>
