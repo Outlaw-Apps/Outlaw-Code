@@ -206,8 +206,44 @@ module.exports.search = async function search(query, maxResults = DEFAULT_MAX_RE
   return results;
 };
 
-/** Watch is implemented in Task 3. */
-module.exports.watch = function watch() {};
+function flushWatchEvents() {
+  if (watchFlushTimer) return;
+  watchFlushTimer = setTimeout(async () => {
+    watchFlushTimer = null;
+    const paths = [...pendingEventPaths];
+    pendingEventPaths = new Set();
+    const events = [];
+    for (const p of paths) {
+      const exists = await fsp.lstat(p).then(() => true).catch(() => false);
+      events.push({ type: exists ? 'changed' : 'deleted', path: p });
+    }
+    if (watchCallback && events.length > 0) watchCallback(events);
+  }, 300);
+}
+
+module.exports.watch = function watch(onEvents) {
+  module.exports.stopWatch();
+  if (!root) return;
+  watchCallback = onEvents;
+  try {
+    watcher = fs.watch(root, { recursive: true }, (_type, filename) => {
+      if (typeof filename !== 'string' || !filename) return;
+      pendingEventPaths.add(path.join(root, filename));
+      flushWatchEvents();
+    });
+  } catch {
+    return;
+  }
+  watcher.on('error', () => {
+    watcher = null;
+    if (watchRestartTimer) return;
+    watchRestartTimer = setTimeout(() => {
+      watchRestartTimer = null;
+      if (watchCallback) module.exports.watch(watchCallback);
+    }, 2000);
+  });
+};
+
 module.exports.stopWatch = function stopWatch() {
   if (watchFlushTimer) clearTimeout(watchFlushTimer);
   if (watchRestartTimer) clearTimeout(watchRestartTimer);

@@ -139,3 +139,27 @@ test('search respects maxResults', async (t) => {
     assert.strictEqual(results.length, 5);
   });
 });
+
+test('watch emits changed and deleted events', async (t) => {
+  await withRoot(t, async (dir) => {
+    const events = [];
+    ws.watch((batch) => { for (const e of batch) events.push(e); });
+    await ws.writeFile('w1.txt', 'one');
+    await ws.writeFile('w1.txt', 'two');
+    await new Promise((resolve) => setTimeout(resolve, 600)); // flush window
+    await ws.delete('w1.txt');
+    await new Promise((resolve) => setTimeout(resolve, 600)); // flush window
+    assert.strictEqual(events.some((e) => e.path.endsWith('w1.txt') && e.type === 'changed'), true);
+    assert.strictEqual(events.some((e) => e.path.endsWith('w1.txt') && e.type === 'deleted'), true);
+  });
+});
+
+test('watch batches bursts into one callback', async (t) => {
+  await withRoot(t, async () => {
+    let calls = 0;
+    ws.watch(() => { calls += 1; });
+    for (let i = 0; i < 10; i++) await ws.writeFile(`burst${i}.txt`, 'x');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.strictEqual(calls <= 2, true, `expected <= 2 callbacks, got ${calls}`);
+  });
+});
