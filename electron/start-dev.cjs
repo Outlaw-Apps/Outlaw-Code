@@ -1,9 +1,9 @@
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 
 const devServerUrl = 'http://127.0.0.1:3000';
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const electronCommand = process.platform === 'win32' ? 'electron.cmd' : 'electron';
+const electronBinary = require('electron');
+const isWindows = process.platform === 'win32';
 
 let viteProcess;
 let electronProcess;
@@ -28,31 +28,38 @@ function waitForServer(url, attemptsRemaining = 60) {
   });
 }
 
-function stopProcesses() {
-  if (electronProcess && !electronProcess.killed) {
-    electronProcess.kill();
+function killTree(child) {
+  if (!child || !child.pid || child.killed || child.exitCode !== null || child.signalCode !== null) {
+    return;
   }
 
-  if (viteProcess && !viteProcess.killed) {
-    viteProcess.kill();
+  if (isWindows) {
+    spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  } else {
+    child.kill();
   }
 }
 
+function stopProcesses() {
+  killTree(electronProcess);
+  killTree(viteProcess);
+}
+
 async function start() {
-  viteProcess = spawn(npmCommand, ['run', 'dev'], {
+  viteProcess = spawn('npm run dev', {
     stdio: 'inherit',
-    shell: false,
+    shell: true,
   });
 
   viteProcess.on('exit', (code) => {
-    if (code !== 0 && electronProcess && !electronProcess.killed) {
-      electronProcess.kill();
+    if (code !== 0) {
+      killTree(electronProcess);
     }
   });
 
   await waitForServer(devServerUrl);
 
-  electronProcess = spawn(electronCommand, ['.'], {
+  electronProcess = spawn(electronBinary, ['.'], {
     stdio: 'inherit',
     shell: false,
     env: {
