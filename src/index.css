@@ -61,6 +61,14 @@
   padding-top: 8px;
 }
 
+.outlaw-native-terminal .xterm {
+  height: 100%;
+}
+
+.outlaw-native-terminal .xterm-viewport {
+  overflow-y: auto !important;
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 10px;
