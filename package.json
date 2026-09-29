@@ -159,6 +159,8 @@
     }
   },
   "allowScripts": {
-    "electron@39.8.10": true
+    "electron@39.8.10": true,
+    "esbuild@0.28.2": true,
+    "node-pty@1.1.0": true
   }
 }
