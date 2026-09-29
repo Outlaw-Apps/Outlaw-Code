@@ -121,7 +121,9 @@ export function BottomPanel({
 
       {/* Bottom Panel Content */}
       <div className="flex-1 overflow-hidden relative">
-        {currentTab === 'terminal' && <TerminalPanel sandbox={sandbox} />}
+        <div className={cn("h-full w-full", currentTab === 'terminal' ? "block" : "hidden")}>
+          <TerminalPanel sandbox={sandbox} />
+        </div>
 
         {currentTab === 'output' && (
           <div className="h-full w-full bg-[#18181b] p-3 overflow-y-auto font-mono text-[11px] text-zinc-300">

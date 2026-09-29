@@ -17,6 +17,7 @@ interface Window {
     readonly aiProxyToken?: string;
     readonly fs?: import('./lib/fs/bridge').OutlawCodeFsBridge;
     readonly git?: import('./lib/fs/bridge').OutlawCodeGitBridge;
+    readonly terminal?: import('./lib/fs/bridge').OutlawCodeTerminalBridge;
     readonly onFsEvents?: (callback: (events: import('./lib/fs/types').FsEvent[]) => void) => () => void;
   };
 }

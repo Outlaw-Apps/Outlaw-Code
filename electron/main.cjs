@@ -4,6 +4,23 @@ const http = require('http');
 const path = require('path');
 const workspace = require('./workspace.cjs');
 const git = require('./git.cjs');
+const { createTerminalManager } = require('./terminal-manager.cjs');
+
+let terminalManager;
+let terminalLoadError;
+
+function getTerminalManager() {
+  if (terminalManager) return terminalManager;
+  if (terminalLoadError) throw terminalLoadError;
+  try {
+    terminalManager = createTerminalManager({ pty: require('node-pty') });
+    return terminalManager;
+  } catch (error) {
+    terminalLoadError = error instanceof Error ? error : new Error(String(error));
+    terminalLoadError.code ||= 'ENOTSUP';
+    throw terminalLoadError;
+  }
+}
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const AI_PROXY_PREFIX = '/api/openai';
@@ -272,6 +289,14 @@ function createMainWindow(aiProxyBaseURL, aiProxyToken) {
     },
   });
 
+  const ownerId = mainWindow.webContents.id;
+  mainWindow.webContents.once('destroyed', () => {
+    terminalManager?.disposeOwner(ownerId);
+  });
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) terminalManager?.disposeOwner(ownerId);
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -296,6 +321,22 @@ function handleAsync(channel, fn) {
       return { ok: true, value: await fn(...args) };
     } catch (err) {
       return { ok: false, error: { code: err.code || 'EPERM', message: err instanceof Error ? err.message : String(err) } };
+    }
+  });
+}
+
+function handleAsyncWithEvent(channel, fn) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      return { ok: true, value: await fn(event, ...args) };
+    } catch (err) {
+      return {
+        ok: false,
+        error: {
+          code: err.code || 'EPERM',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
     }
   });
 }
@@ -335,10 +376,40 @@ function installFsIpc() {
   handleAsync('git:diff', (p) => git.diff(workspace.getRoot(), p));
 }
 
+function installTerminalIpc() {
+  handleAsyncWithEvent('terminal:create', (event, cols = 80, rows = 24) => {
+    const sender = event.sender;
+    const ownerId = sender.id;
+    const cwd = workspace.getRoot() || app.getPath('home');
+    return getTerminalManager().create({
+      ownerId,
+      cwd,
+      cols,
+      rows,
+      onData: (payload) => {
+        if (!sender.isDestroyed()) sender.send('terminal:data', payload);
+      },
+      onExit: (payload) => {
+        if (!sender.isDestroyed()) sender.send('terminal:exit', payload);
+      },
+    });
+  });
+  handleAsyncWithEvent('terminal:input', (event, sessionId, data) => (
+    getTerminalManager().write(sessionId, event.sender.id, data)
+  ));
+  handleAsyncWithEvent('terminal:resize', (event, sessionId, cols, rows) => (
+    getTerminalManager().resize(sessionId, event.sender.id, cols, rows)
+  ));
+  handleAsyncWithEvent('terminal:dispose', (event, sessionId) => (
+    getTerminalManager().dispose(sessionId, event.sender.id)
+  ));
+}
+
 app.whenReady().then(async () => {
   aiProxyServer = await startAiProxyServer();
   createMainWindow(aiProxyServer.baseURL, aiProxyServer.token);
   installFsIpc();
+  installTerminalIpc();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -348,6 +419,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  terminalManager?.disposeAll();
   aiProxyServer?.server.close();
 });
 

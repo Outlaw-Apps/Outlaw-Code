@@ -12,6 +12,7 @@ import { useFs, useGit, useWorkspace } from '../lib/fs/context';
 import { FsError } from '../lib/fs/types';
 import { onWorkspaceEvent } from '../lib/workspace-events';
 import type { GitStatus } from '../lib/git/types';
+import { onWorkspaceCommand } from '../lib/app-commands';
 import { FileExplorer } from './FileExplorer';
 import { EditorTabs, type TabItem } from './EditorTabs';
 import { InlineAIWidget } from './InlineAIWidget';
@@ -154,6 +155,31 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
       window.removeEventListener(IMPORT_FOLDER_EVENT, forwardFolder);
     };
   }, []);
+
+  useEffect(() => onWorkspaceCommand((command) => {
+    switch (command) {
+      case 'view.explorer':
+        setActiveActivityView('explorer');
+        setSidebarOpen(true);
+        return;
+      case 'view.search':
+        setActiveActivityView('search');
+        setSidebarOpen(true);
+        return;
+      case 'view.sourceControl':
+        setActiveActivityView('git');
+        setSidebarOpen(true);
+        return;
+      case 'view.terminal':
+        setActiveBottomTab('terminal');
+        setBottomPanelOpen(true);
+        return;
+      case 'view.output':
+        setActiveBottomTab('output');
+        setBottomPanelOpen(true);
+        return;
+    }
+  }), []);
 
   // Load a file from the workspace provider into tabs
   const loadFile = useCallback(async (path: string) => {
@@ -308,6 +334,26 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
         e.preventDefault();
         saveActiveFile();
       }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        setActiveActivityView('explorer');
+        setSidebarOpen(true);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setActiveActivityView('search');
+        setSidebarOpen(true);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        setActiveActivityView('git');
+        setSidebarOpen(true);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'u') {
+        e.preventDefault();
+        setActiveBottomTab('output');
+        setBottomPanelOpen(true);
+      }
       // Ctrl+K: Inline AI
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -316,7 +362,10 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
       // Ctrl+` (backtick): Toggle bottom panel
       if ((e.ctrlKey || e.metaKey) && e.key === '`') {
         e.preventDefault();
-        setBottomPanelOpen((prev) => !prev);
+        setActiveBottomTab('terminal');
+        setBottomPanelOpen((previous) => (
+          activeBottomTab === 'terminal' ? !previous : true
+        ));
       }
       // Ctrl+L: Toggle AI chat panel
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
@@ -332,7 +381,7 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [saveActiveFile, openFolder]);
+  }, [saveActiveFile, openFolder, activeBottomTab]);
 
   // Sidebar drag resizing
   const startResizingSidebar = useCallback((e: React.MouseEvent) => {
