@@ -293,6 +293,9 @@ function createMainWindow(aiProxyBaseURL, aiProxyToken) {
   mainWindow.webContents.once('destroyed', () => {
     terminalManager?.disposeOwner(ownerId);
   });
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) terminalManager?.disposeOwner(ownerId);
+  });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);

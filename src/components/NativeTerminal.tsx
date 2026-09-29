@@ -5,10 +5,12 @@ import '@xterm/xterm/css/xterm.css';
 import { RefreshCw, Square, Terminal as TerminalIcon } from 'lucide-react';
 import { Button } from './ui/button';
 import type { TerminalSessionInfo } from '../lib/fs/bridge';
+import { useWorkspace } from '../lib/fs/context';
 
 type TerminalStatus = 'starting' | 'running' | 'exited' | 'error';
 
 export function NativeTerminal() {
+  const workspaceRoot = useWorkspace().workspace?.root ?? null;
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const sessionRef = useRef<string | null>(null);
@@ -150,7 +152,7 @@ export function NativeTerminal() {
       if (terminalRef.current === terminal) terminalRef.current = null;
       terminal.dispose();
     };
-  }, [generation]);
+  }, [generation, workspaceRoot]);
 
   return (
     <div className="h-full w-full bg-[#18181b] flex flex-col text-zinc-300">

@@ -8,6 +8,8 @@ app.whenReady().then(() => {
   const manager = createTerminalManager({ pty: require('node-pty') });
   const stateMarker = `OUTLAW_STATE_${Date.now()}`;
   const interruptMarker = `OUTLAW_INTERRUPT_${Date.now()}`;
+  const stateSplit = Math.floor(stateMarker.length / 2);
+  const interruptSplit = Math.floor(interruptMarker.length / 2);
   let output = '';
   let settled = false;
   let shellName = 'PowerShell';
@@ -36,7 +38,7 @@ app.whenReady().then(() => {
         setTimeout(() => {
           manager.write(info.id, 1, '\x03');
           setTimeout(() => {
-            manager.write(info.id, 1, `Write-Output '${interruptMarker}'\r`);
+            manager.write(info.id, 1, `Write-Output ('${interruptMarker.slice(0, interruptSplit)}' + '${interruptMarker.slice(interruptSplit)}')\r`);
           }, 100);
         }, 250);
         return;
@@ -55,7 +57,8 @@ app.whenReady().then(() => {
   });
   shellName = info.shellName;
 
-  manager.write(info.id, 1, `$env:OUTLAW_SMOKE='${stateMarker}'; Write-Output $env:OUTLAW_SMOKE\r`);
+  manager.write(info.id, 1, `$env:OUTLAW_SMOKE='${stateMarker.slice(0, stateSplit)}' + '${stateMarker.slice(stateSplit)}'\r`);
+  manager.write(info.id, 1, 'Write-Output $env:OUTLAW_SMOKE\r');
 }).catch((error) => {
   console.error(error);
   app.exit(1);
