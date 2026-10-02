@@ -1,8 +1,8 @@
 import React from 'react';
-import { Files, Search, GitBranch, Sparkles, Settings } from 'lucide-react';
+import { Files, Search, GitBranch, Sparkles, Settings, Package } from 'lucide-react';
 import { cn } from '../lib/utils';
 
-export type ActivityView = 'explorer' | 'search' | 'git';
+export type ActivityView = 'explorer' | 'search' | 'git' | 'tools';
 
 interface ActivityBarProps {
   activeView: ActivityView;
@@ -64,7 +64,7 @@ export function ActivityBar({
 
         <button
           onClick={() => handleItemClick('git')}
-          title="Source Control"
+          title="Source Control (Ctrl+Shift+G)"
           className={cn(
             "w-10 h-10 flex items-center justify-center rounded-md transition-colors relative",
             sidebarOpen && activeView === 'git'
@@ -73,6 +73,19 @@ export function ActivityBar({
           )}
         >
           <GitBranch size={18} />
+        </button>
+
+        <button
+          onClick={() => handleItemClick('tools')}
+          title="Tools (Ctrl+Shift+T)"
+          className={cn(
+            "w-10 h-10 flex items-center justify-center rounded-md transition-colors relative",
+            sidebarOpen && activeView === 'tools'
+              ? "text-white before:absolute before:left-0 before:top-2 before:bottom-2 before:w-0.5 before:bg-[#007acc]"
+              : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+          )}
+        >
+          <Package size={18} />
         </button>
       </div>
 

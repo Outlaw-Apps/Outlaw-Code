@@ -6,6 +6,7 @@ import { RefreshCw, Square, Terminal as TerminalIcon } from 'lucide-react';
 import { Button } from './ui/button';
 import type { TerminalSessionInfo } from '../lib/fs/bridge';
 import { useWorkspace } from '../lib/fs/context';
+import { onTerminalCommand } from '../lib/terminal-commands';
 
 type TerminalStatus = 'starting' | 'running' | 'exited' | 'error';
 
@@ -18,6 +19,7 @@ export function NativeTerminal() {
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
   const [status, setStatus] = useState<TerminalStatus>('starting');
   const [error, setError] = useState<string | null>(null);
+  const queuedCommandsRef = useRef<string[]>([]);
 
   const restart = useCallback(() => setGeneration((value) => value + 1), []);
 
@@ -131,6 +133,10 @@ export function NativeTerminal() {
           terminal.writeln(`\r\n\x1b[90m[PowerShell exited with code ${event.exitCode ?? 'unknown'}]\x1b[0m`);
         });
         fit();
+        while (queuedCommandsRef.current.length > 0) {
+          const command = queuedCommandsRef.current.shift();
+          if (command) await bridge.input(info.id, `${command}\r`).catch(() => undefined);
+        }
         terminal.focus();
       } catch (reason) {
         if (cancelled) return;
@@ -153,6 +159,19 @@ export function NativeTerminal() {
       terminal.dispose();
     };
   }, [generation, workspaceRoot]);
+
+  useEffect(() => onTerminalCommand(({ command }) => {
+    const bridge = window.outlawCode?.terminal;
+    const sessionId = sessionRef.current;
+    if (!bridge || !sessionId) {
+      queuedCommandsRef.current.push(command);
+      return;
+    }
+    void bridge.input(sessionId, `${command}\r`).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : 'PowerShell input failed.');
+      setStatus('error');
+    });
+  }), []);
 
   return (
     <div className="h-full w-full bg-[#18181b] flex flex-col text-zinc-300">

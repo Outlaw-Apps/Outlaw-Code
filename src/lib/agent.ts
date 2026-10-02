@@ -15,14 +15,10 @@
  */
 import OpenAI from 'openai';
 import { loadSettings, type AiSettings } from './settings';
-
-/** Same-origin proxy prefix (see vite-ai-proxy-plugin.ts). */
-export const AI_PROXY_BASE_URL = '/api/openai';
-
-/** Header carrying the real OpenAI-compatible base URL for the proxy. */
-export const UPSTREAM_BASE_URL_HEADER = 'X-Upstream-Base-URL';
-
-export const ELECTRON_PROXY_TOKEN_HEADER = 'X-Outlaw-Code-Proxy-Token';
+import {
+  buildAiProxyHeaders,
+  resolveAiProxyBaseURL,
+} from './ai-proxy';
 
 export type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -56,41 +52,24 @@ Guidelines:
 - Reference the active file and surrounding context when answering questions or writing code.
 - When debugging, pinpoint root causes with precision and explain the fix.
 - Tailor your code to the user's active codebase, frameworks, and packages.
+- When changing files in Agent mode, prefer direct workspace edits using fenced blocks exactly like:
+  \`\`\`outlaw-edit path="relative/path.ext"
+  <complete file contents>
+  \`\`\`
+  Each block replaces that file when the user applies it. Use paths relative to the workspace root unless the prompt gives an existing absolute path.
 - When the user asks for code, provide complete or clear diff blocks. In Ask mode, explain concepts concisely.`;
 
 export const ASK_AGENT_SYSTEM_PROMPT = `You are a helpful, concise code assistant. Answer the user's questions about codebases and software engineering. You are in "Ask" (read-only) mode: explain rather than modify, and suggest concrete next steps.`;
 
-function resolveProxyBaseURL(): string {
-  if (typeof window === 'undefined') return AI_PROXY_BASE_URL;
-
-  const electronProxyBaseURL = window.outlawCode?.aiProxyBaseURL?.replace(/\/$/, '');
-  if (electronProxyBaseURL) return electronProxyBaseURL;
-
-  // The OpenAI SDK requires an *absolute* base URL: buildURL does
-  // `new URL(baseURL + path)` with a path like "/chat/completions". A relative
-  // base (e.g. "/api/openai") throws "Invalid URL" and the request never
-  // reaches the proxy. Resolve the same-origin prefix against the current
-  // origin so the browser stays same-origin (no CORS) and the Vite/preview
-  // middleware (or any /api/openai deploy proxy) can forward to the upstream.
-  if (window.location?.origin && window.location.origin !== 'null' && window.location.origin !== 'file://') {
-    return window.location.origin + AI_PROXY_BASE_URL;
-  }
-  return AI_PROXY_BASE_URL;
-}
-
 function buildClient(settings: AiSettings): OpenAI {
   const upstreamBase = (settings.baseURL || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const electronProxyToken = typeof window !== 'undefined' ? window.outlawCode?.aiProxyToken : undefined;
   return new OpenAI({
     apiKey: settings.apiKey || 'sk-no-key',
     // Absolute same-origin URL so the browser never calls the provider origin
     // directly (CORS). The proxy forwards via X-Upstream-Base-URL.
-    baseURL: resolveProxyBaseURL(),
+    baseURL: resolveAiProxyBaseURL(),
     dangerouslyAllowBrowser: true,
-    defaultHeaders: {
-      [UPSTREAM_BASE_URL_HEADER]: upstreamBase,
-      ...(electronProxyToken ? { [ELECTRON_PROXY_TOKEN_HEADER]: electronProxyToken } : {}),
-    },
+    defaultHeaders: buildAiProxyHeaders(upstreamBase),
   });
 }
 

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Terminal as TermIcon, Trash2, CornerDownLeft } from 'lucide-react';
 import { Button } from './ui/button';
+import { onTerminalCommand } from '../lib/terminal-commands';
 
 interface SandboxTerminalProps {
   sandbox: any | null;
@@ -82,6 +83,10 @@ export function SandboxTerminal({ sandbox }: SandboxTerminalProps) {
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   };
+
+  useEffect(() => onTerminalCommand(({ command }) => {
+    void runCommand(command);
+  }), [sandbox, isRunning]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {

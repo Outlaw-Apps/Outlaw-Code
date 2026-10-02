@@ -20,6 +20,7 @@ import {
   GitBranch,
   Terminal as TerminalIcon,
   FileText,
+  Package,
 } from 'lucide-react';
 import { requestImportFiles, requestImportFolder } from './lib/import-files';
 import { FsProvider, hasLocalFs, requestOpenFolder } from './lib/fs/context';
@@ -216,6 +217,21 @@ export default function App() {
                   <Plus size={13} />
                   New Project
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => executeCommand('file.newFile')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <FileText size={13} />
+                  New File...
+                  <DropdownMenuShortcut>Ctrl+N</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => executeCommand('file.newFolder')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <FolderPlus size={13} />
+                  New Folder...
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => executeCommand('file.save')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <FileText size={13} />
+                  Save
+                  <DropdownMenuShortcut>Ctrl+S</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="bg-border/30" />
                 <DropdownMenuItem onClick={() => executeCommand('file.openHistory')} className="gap-2 cursor-pointer focus:bg-zinc-800">
                   <FolderPlus size={13} />
                   Open Project History...
@@ -275,6 +291,11 @@ export default function App() {
                   <GitBranch size={13} />
                   Source Control
                   <DropdownMenuShortcut>Ctrl+Shift+G</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => executeCommand('view.tools')} className="gap-2 cursor-pointer focus:bg-zinc-800">
+                  <Package size={13} />
+                  Tools
+                  <DropdownMenuShortcut>Ctrl+Shift+T</DropdownMenuShortcut>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator className="bg-border/30" />
                 <DropdownMenuItem onClick={() => executeCommand('view.terminal')} className="gap-2 cursor-pointer focus:bg-zinc-800">

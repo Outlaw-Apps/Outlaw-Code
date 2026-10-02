@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { loadSettings, saveSettings, clearSettings, DEFAULT_SETTINGS, type AiSettings } from '../lib/settings';
+import { fetchProviderModels, type ProviderModel } from '../lib/ai-model-catalog';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -18,6 +20,10 @@ export function SettingsModal({ isOpen, onClose, onSaved }: SettingsModalProps) 
   const [model, setModel] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [modelOptions, setModelOptions] = useState<ProviderModel[]>([]);
+  const [modelFetchState, setModelFetchState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [modelFetchMessage, setModelFetchMessage] = useState<string | null>(null);
+  const lastModelFetchKey = useRef<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -26,8 +32,72 @@ export function SettingsModal({ isOpen, onClose, onSaved }: SettingsModalProps) 
       setBaseURL(s.baseURL);
       setModel(s.model);
       setSaved(false);
+      setModelOptions([]);
+      setModelFetchState('idle');
+      setModelFetchMessage(null);
+      lastModelFetchKey.current = null;
     }
   }, [isOpen]);
+
+  const canFetchModels = apiKey.trim().length > 4 && isHttpUrl(baseURL);
+
+  const loadModels = useCallback(async (options: { force?: boolean; signal?: AbortSignal } = {}) => {
+    const fetchKey = `${baseURL.trim()}::${apiKey.trim()}`;
+    if (!canFetchModels) {
+      setModelOptions([]);
+      setModelFetchState('idle');
+      setModelFetchMessage(
+        apiKey.trim() || baseURL.trim()
+          ? 'Enter a valid API key and a full http(s) provider Base URL to load models.'
+          : null,
+      );
+      lastModelFetchKey.current = null;
+      return;
+    }
+    if (!options.force && lastModelFetchKey.current === fetchKey && modelOptions.length > 0) return;
+
+    setModelFetchState('loading');
+    setModelFetchMessage('Fetching models from the provider...');
+    try {
+      const models = await fetchProviderModels({
+        apiKey,
+        baseURL,
+        signal: options.signal,
+      });
+      if (options.signal?.aborted) return;
+      setModelOptions(models);
+      setModelFetchState('success');
+      setModelFetchMessage(`Loaded ${models.length} model${models.length === 1 ? '' : 's'} from /models.`);
+      lastModelFetchKey.current = fetchKey;
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;
+      setModelOptions([]);
+      setModelFetchState('error');
+      setModelFetchMessage(err instanceof Error ? err.message : 'Could not fetch models.');
+      lastModelFetchKey.current = null;
+    }
+  }, [apiKey, baseURL, canFetchModels, modelOptions.length]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    if (!apiKey.trim() || !baseURL.trim()) {
+      setModelOptions([]);
+      setModelFetchState('idle');
+      setModelFetchMessage(null);
+      lastModelFetchKey.current = null;
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void loadModels({ signal: controller.signal });
+    }, 700);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [isOpen, apiKey, baseURL, loadModels]);
 
   const handleSave = () => {
     const next: AiSettings = { apiKey, baseURL, model };
@@ -113,7 +183,37 @@ export function SettingsModal({ isOpen, onClose, onSaved }: SettingsModalProps) 
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="model">Model</Label>
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="model">Model</Label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-[11px] gap-1.5 text-muted-foreground hover:text-foreground"
+                disabled={!canFetchModels || modelFetchState === 'loading'}
+                onClick={() => void loadModels({ force: true })}
+              >
+                <RefreshCw size={12} className={modelFetchState === 'loading' ? 'animate-spin' : ''} />
+                {modelFetchState === 'success' ? 'Refresh models' : 'Fetch models'}
+              </Button>
+            </div>
+            {modelOptions.length > 0 && (
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="flex h-9 w-full rounded-md border border-border/50 bg-background/50 px-3 py-2 text-sm text-foreground outline-none focus:border-[#007acc]"
+              >
+                {model && !modelOptions.some((option) => option.id === model) && (
+                  <option value={model}>{model} (current custom ID)</option>
+                )}
+                {!model && <option value="">Select a model...</option>}
+                {modelOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.ownedBy ? `${option.id} - ${option.ownedBy}` : option.id}
+                  </option>
+                ))}
+              </select>
+            )}
             <Input
               id="model"
               type="text"
@@ -122,6 +222,17 @@ export function SettingsModal({ isOpen, onClose, onSaved }: SettingsModalProps) 
               onChange={(e) => setModel(e.target.value)}
               className="bg-background/50 border-border/50"
             />
+            {modelFetchMessage && (
+              <p
+                className={
+                  modelFetchState === 'error'
+                    ? 'text-[10px] text-red-400 leading-relaxed'
+                    : 'text-[10px] text-muted-foreground/70 leading-relaxed'
+                }
+              >
+                {modelFetchMessage}
+              </p>
+            )}
           </div>
         </div>
 
@@ -136,4 +247,13 @@ export function SettingsModal({ isOpen, onClose, onSaved }: SettingsModalProps) 
       </DialogContent>
     </Dialog>
   );
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }

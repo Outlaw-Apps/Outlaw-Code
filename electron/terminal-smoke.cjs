@@ -3,7 +3,12 @@ const os = require('os');
 const { createTerminalManager } = require('./terminal-manager.cjs');
 
 const TIMEOUT_MS = 15000;
-const PROMPT_PATTERN = /PS [^\r\n]*> /;
+const PROMPT_PATTERN = /PS [^\r\n]*>\s?/;
+const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
+
+function visible(text) {
+  return text.replace(ANSI_PATTERN, '');
+}
 
 app.whenReady().then(() => {
   const manager = createTerminalManager({ pty: require('node-pty') });
@@ -34,13 +39,13 @@ app.whenReady().then(() => {
       const cursorQueries = data.split('\x1b[6n').length - 1;
       for (let i = 0; i < cursorQueries; i += 1) manager.write(info.id, 1, '\x1b[1;1R');
       output += data;
-      if (phase === 'boot' && PROMPT_PATTERN.test(output)) {
+      if (phase === 'boot' && PROMPT_PATTERN.test(visible(output))) {
         phase = 'set';
         output = '';
         manager.write(info.id, 1, `$env:OUTLAW_SMOKE='${stateMarker.slice(0, stateSplit)}' + '${stateMarker.slice(stateSplit)}'\r`);
         return;
       }
-      if (phase === 'set' && PROMPT_PATTERN.test(output)) {
+      if (phase === 'set' && PROMPT_PATTERN.test(visible(output))) {
         phase = 'state';
         output = '';
         manager.write(info.id, 1, 'Write-Output $env:OUTLAW_SMOKE\r');

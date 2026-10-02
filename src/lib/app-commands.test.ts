@@ -31,6 +31,8 @@ test('Open Folder is available only when the Electron local filesystem exists', 
 test('workspace command detection accepts views and rejects app-owned actions', () => {
   assert.equal(isWorkspaceCommand('view.explorer'), true);
   assert.equal(isWorkspaceCommand('view.terminal'), true);
+  assert.equal(isWorkspaceCommand('file.newFile'), true);
+  assert.equal(isWorkspaceCommand('file.save'), true);
   assert.equal(isWorkspaceCommand('file.openHistory'), false);
 });
 

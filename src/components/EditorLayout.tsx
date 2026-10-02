@@ -13,11 +13,13 @@ import { FsError } from '../lib/fs/types';
 import { onWorkspaceEvent } from '../lib/workspace-events';
 import type { GitStatus } from '../lib/git/types';
 import { onWorkspaceCommand } from '../lib/app-commands';
+import { requestFileOperation } from '../lib/file-operation-requests';
 import { FileExplorer } from './FileExplorer';
 import { EditorTabs, type TabItem } from './EditorTabs';
 import { InlineAIWidget } from './InlineAIWidget';
 import { BottomPanel, type BottomTab } from './BottomPanel';
 import { ChatPanel } from './ChatPanel';
+import { ToolsPanel } from './ToolsPanel';
 import { Button } from './ui/button';
 import Editor from '@monaco-editor/react';
 
@@ -170,6 +172,10 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
         setActiveActivityView('git');
         setSidebarOpen(true);
         return;
+      case 'view.tools':
+        setActiveActivityView('tools');
+        setSidebarOpen(true);
+        return;
       case 'view.terminal':
         setActiveBottomTab('terminal');
         setBottomPanelOpen(true);
@@ -177,6 +183,16 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
       case 'view.output':
         setActiveBottomTab('output');
         setBottomPanelOpen(true);
+        return;
+      case 'file.newFile':
+        setActiveActivityView('explorer');
+        setSidebarOpen(true);
+        requestFileOperation('new-file');
+        return;
+      case 'file.newFolder':
+        setActiveActivityView('explorer');
+        setSidebarOpen(true);
+        requestFileOperation('new-folder');
         return;
     }
   }), []);
@@ -299,6 +315,23 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
     }
   }, [provider, notify, refreshGitStatus]);
 
+  useEffect(() => onWorkspaceCommand((command) => {
+    if (command === 'file.save') void saveActiveFile();
+  }), [saveActiveFile]);
+
+  const handleFileWritten = useCallback(async (path: string, content: string) => {
+    setFileBuffers((prev) => ({ ...prev, [path]: content }));
+    setOriginalFileBuffers((prev) => ({ ...prev, [path]: content }));
+    setOpenTabs((prev) => {
+      if (prev.some((tab) => tab.path === path)) {
+        return prev.map((tab) => (tab.path === path ? { ...tab, isDirty: false } : tab));
+      }
+      return [...prev, { path, isDirty: false }];
+    });
+    setActiveFilePath(path);
+    await refreshGitStatus();
+  }, [refreshGitStatus]);
+
   // Handle Code Replacement from Inline AI or Chat
   const handleApplyCode = (replacement: string) => {
     const editor = editorInstanceRef.current;
@@ -334,6 +367,13 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
         e.preventDefault();
         saveActiveFile();
       }
+      // Ctrl+N / Cmd+N: New file
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        setActiveActivityView('explorer');
+        setSidebarOpen(true);
+        requestFileOperation('new-file');
+      }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'e') {
         e.preventDefault();
         setActiveActivityView('explorer');
@@ -347,6 +387,11 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'g') {
         e.preventDefault();
         setActiveActivityView('git');
+        setSidebarOpen(true);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        setActiveActivityView('tools');
         setSidebarOpen(true);
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'u') {
@@ -617,6 +662,10 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
               </div>
             )}
 
+            {activeActivityView === 'tools' && (
+              <ToolsPanel />
+            )}
+
             {/* Sidebar Resizer Handle */}
             <div
               onMouseDown={startResizingSidebar}
@@ -826,8 +875,10 @@ export function EditorLayout({ sandbox, initialPrompt, onOpenSettings }: EditorL
               isEmbedded={true}
               initialPrompt={initialPrompt}
               activeFile={activeFilePath}
+              activeFileContent={currentFileContent}
               selectedCode={selectedText}
               onApplyCode={handleApplyCode}
+              onFileWritten={handleFileWritten}
             />
           </div>
         )}

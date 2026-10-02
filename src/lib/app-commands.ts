@@ -12,6 +12,23 @@ export const APP_COMMANDS = [
     category: 'File',
   },
   {
+    id: 'file.newFile',
+    title: 'File: New File...',
+    category: 'File',
+    shortcut: 'Ctrl+N',
+  },
+  {
+    id: 'file.newFolder',
+    title: 'File: New Folder...',
+    category: 'File',
+  },
+  {
+    id: 'file.save',
+    title: 'File: Save',
+    category: 'File',
+    shortcut: 'Ctrl+S',
+  },
+  {
     id: 'view.explorer',
     title: 'View: Explorer',
     category: 'View',
@@ -28,6 +45,12 @@ export const APP_COMMANDS = [
     title: 'View: Source Control',
     category: 'View',
     shortcut: 'Ctrl+Shift+G',
+  },
+  {
+    id: 'view.tools',
+    title: 'View: Tools',
+    category: 'View',
+    shortcut: 'Ctrl+Shift+T',
   },
   {
     id: 'view.terminal',
@@ -55,16 +78,24 @@ export type WorkspaceCommandId = Extract<
   | 'view.explorer'
   | 'view.search'
   | 'view.sourceControl'
+  | 'view.tools'
   | 'view.terminal'
   | 'view.output'
+  | 'file.newFile'
+  | 'file.newFolder'
+  | 'file.save'
 >;
 
 const workspaceCommandIds = new Set<AppCommandId>([
   'view.explorer',
   'view.search',
   'view.sourceControl',
+  'view.tools',
   'view.terminal',
   'view.output',
+  'file.newFile',
+  'file.newFolder',
+  'file.save',
 ]);
 const workspaceListeners = new Set<(command: WorkspaceCommandId) => void>();
 

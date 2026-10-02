@@ -26,6 +26,11 @@ import {
 } from '../lib/agent';
 import { AI_MODELS, resolveModel } from '../lib/models';
 import { loadSettings, saveModel, isConfigured } from '../lib/settings';
+import { useFs } from '../lib/fs/context';
+import { joinPath, isSameOrUnder } from '../lib/fs/paths';
+import { emitWorkspaceEvent } from '../lib/workspace-events';
+import { extractWorkspaceEdits, type WorkspaceEditBlock } from '../lib/ai-edits';
+import { buildWorkspaceAiContext } from '../lib/workspace-ai-context';
 
 interface ChatPanelProps {
   sandbox: any | null;
@@ -33,8 +38,10 @@ interface ChatPanelProps {
   initialPrompt?: string | null;
   onBuildStatusChange?: (isBuilding: boolean) => void;
   activeFile?: string | null;
+  activeFileContent?: string | null;
   selectedCode?: string | null;
   onApplyCode?: (code: string) => void;
+  onFileWritten?: (path: string, content: string) => void | Promise<void>;
 }
 
 const AGENT_MODES = [
@@ -71,9 +78,12 @@ export function ChatPanel({
   initialPrompt = null,
   onBuildStatusChange,
   activeFile = null,
+  activeFileContent = null,
   selectedCode = null,
   onApplyCode,
+  onFileWritten,
 }: ChatPanelProps) {
+  const provider = useFs();
   const sandboxId = sandbox?.id || null;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -86,6 +96,9 @@ export function ChatPanel({
   const [hasAnimated, setHasAnimated] = useState(false);
   const [selectedModel, setSelectedModel] = useState(() => resolveModel(loadSettings().model));
   const [agentMode, setAgentMode] = useState(AGENT_MODES[0]);
+  const [includeWorkspaceContext, setIncludeWorkspaceContext] = useState(true);
+  const [applyingEditMessageId, setApplyingEditMessageId] = useState<string | null>(null);
+  const [appliedEditMessageIds, setAppliedEditMessageIds] = useState<Set<string>>(new Set());
   const chooseModel = (model: typeof AI_MODELS[number]) => {
     setSelectedModel(model);
     saveModel(model.id);
@@ -161,8 +174,27 @@ export function ChatPanel({
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const contextualPrompt = activeFile
-      ? `[Context: Active File: ${activeFile}${selectedCode ? `\nSelected Code:\n${selectedCode}` : ''}]\n\n${prompt}`
+    const contextParts: string[] = [];
+    if (agentMode.id === 'agent' && includeWorkspaceContext) {
+      const workspaceContext = await buildWorkspaceAiContext(provider, {
+        activeFile,
+        activeFileContent,
+      }).catch((reason) => {
+        console.warn('Could not build workspace AI context:', reason);
+        return null;
+      });
+      if (workspaceContext) contextParts.push(workspaceContext);
+    } else if (activeFile) {
+      contextParts.push([
+        `[Context: Active File: ${activeFile}]`,
+        selectedCode ? `Selected Code:\n${selectedCode}` : activeFileContent ? `Active File Content:\n${activeFileContent.slice(0, 7000)}` : '',
+      ].filter(Boolean).join('\n'));
+    }
+    if (selectedCode && !contextParts.some((part) => part.includes('Selected Code:'))) {
+      contextParts.push(`[Selected Code from ${activeFile ?? 'active file'}]\n${selectedCode}`);
+    }
+    const contextualPrompt = contextParts.length > 0
+      ? `${contextParts.join('\n\n')}\n\n[User request]\n${prompt}`
       : prompt;
 
     try {
@@ -188,7 +220,7 @@ export function ChatPanel({
       setIsLoading(false);
       abortRef.current = null;
     }
-  }, [messages, agentMode.id]);
+  }, [messages, agentMode.id, includeWorkspaceContext, provider, activeFile, activeFileContent, selectedCode]);
 
   // Handle initial prompt
   useEffect(() => {
@@ -284,6 +316,40 @@ export function ChatPanel({
     }
   };
 
+  const resolveEditPath = useCallback((editPath: string): string => {
+    const root = provider.root;
+    if (!root) return editPath;
+    if (isSameOrUnder(editPath, root)) return editPath;
+    if (/^[A-Za-z]:[\\/]/.test(editPath)) return editPath;
+    return joinPath(root, editPath.replace(/^[/\\]+/, ''));
+  }, [provider.root]);
+
+  const applyWorkspaceEdits = useCallback(async (messageId: string, edits: WorkspaceEditBlock[]) => {
+    if (!provider.root) {
+      setError('Open a folder before applying AI file edits.');
+      return;
+    }
+    setApplyingEditMessageId(messageId);
+    setError(null);
+    const writtenPaths: string[] = [];
+    try {
+      for (const edit of edits) {
+        const path = resolveEditPath(edit.path);
+        await provider.writeFile(path, edit.content);
+        await onFileWritten?.(path, edit.content);
+        writtenPaths.push(path);
+      }
+      emitWorkspaceEvent({ type: 'tree-changed' });
+      emitWorkspaceEvent({ type: 'files-changed', paths: writtenPaths });
+      setAppliedEditMessageIds((prev) => new Set([...prev, messageId]));
+    } catch (reason) {
+      console.error('Failed to apply workspace edits:', reason);
+      setError(reason instanceof Error ? reason.message : 'Could not apply workspace edits.');
+    } finally {
+      setApplyingEditMessageId(null);
+    }
+  }, [provider, resolveEditPath, onFileWritten]);
+
   const placeholder = isLoading
     ? "AI is working..."
     : !sandboxId
@@ -303,37 +369,58 @@ export function ChatPanel({
           <p className="whitespace-pre-wrap leading-relaxed">{m.content}</p>
         </div>
       )}
-      {m.role !== 'user' && (
-        <div className="text-foreground/90 text-[13px] px-1 max-w-full overflow-hidden">
-          {m.content && (
-            <div>
-              <p className="whitespace-pre-wrap leading-relaxed mb-2">{m.content}</p>
-              <div className="flex items-center gap-2 mt-1 mb-2">
-                <button
-                  onClick={() => navigator.clipboard.writeText(m.content)}
-                  className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 bg-secondary/50 px-2 py-0.5 rounded border border-border/30 transition-colors"
-                  title="Copy message"
-                >
-                  <Copy size={10} />
-                  Copy
-                </button>
-                {onApplyCode && (
+      {m.role !== 'user' && (() => {
+        const editBlocks = extractWorkspaceEdits(m.content);
+        const messageId = m.id || String(i);
+        const isApplying = applyingEditMessageId === messageId;
+        const isApplied = appliedEditMessageIds.has(messageId);
+        return (
+          <div className="text-foreground/90 text-[13px] px-1 max-w-full overflow-hidden">
+            {m.content && (
+              <div>
+                <p className="whitespace-pre-wrap leading-relaxed mb-2">{m.content}</p>
+                <div className="flex items-center gap-2 mt-1 mb-2 flex-wrap">
                   <button
-                    onClick={() => {
-                      const codeMatch = m.content.match(/```(?:[a-z]*\n)?([\s\S]*?)```/);
-                      onApplyCode(codeMatch ? codeMatch[1].trim() : m.content);
-                    }}
-                    className="text-[10px] text-[#007acc] hover:text-[#38bdf8] flex items-center gap-1 bg-[#007acc]/10 px-2 py-0.5 rounded border border-[#007acc]/30 transition-colors"
-                    title="Insert or apply into active editor"
+                    onClick={() => navigator.clipboard.writeText(m.content)}
+                    className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 bg-secondary/50 px-2 py-0.5 rounded border border-border/30 transition-colors"
+                    title="Copy message"
                   >
-                    <FileCode size={10} />
-                    Insert in Editor
+                    <Copy size={10} />
+                    Copy
                   </button>
-                )}
+                  {onApplyCode && (
+                    <button
+                      onClick={() => {
+                        const codeMatch = m.content.match(/```(?:[a-z]*\n)?([\s\S]*?)```/);
+                        onApplyCode(codeMatch ? codeMatch[1].trim() : m.content);
+                      }}
+                      className="text-[10px] text-[#007acc] hover:text-[#38bdf8] flex items-center gap-1 bg-[#007acc]/10 px-2 py-0.5 rounded border border-[#007acc]/30 transition-colors"
+                      title="Insert or apply into active editor"
+                    >
+                      <FileCode size={10} />
+                      Insert in Editor
+                    </button>
+                  )}
+                  {editBlocks.length > 0 && (
+                    <button
+                      onClick={() => void applyWorkspaceEdits(messageId, editBlocks)}
+                      disabled={isApplying || isApplied}
+                      className={cn(
+                        "text-[10px] flex items-center gap-1 px-2 py-0.5 rounded border transition-colors",
+                        isApplied
+                          ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
+                          : "text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 border-emerald-500/30 disabled:opacity-60",
+                      )}
+                      title="Write these AI edits to the workspace"
+                    >
+                      <CheckCheck size={10} />
+                      {isApplied ? 'Applied' : isApplying ? 'Applying...' : `Apply Workspace Edits (${editBlocks.length})`}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
-          {m.parts?.filter((p) => p.type === 'tool-invocation').map((part: any, idx: number) => {
+            )}
+            {m.parts?.filter((p) => p.type === 'tool-invocation').map((part: any, idx: number) => {
             const toolId = `${m.id || i}-${idx}`;
             const isExpanded = expandedTools.has(toolId);
             return (
@@ -358,9 +445,10 @@ export function ChatPanel({
                 )}
               </div>
             );
-          })}
-        </div>
-      )}
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 
@@ -379,6 +467,11 @@ export function ChatPanel({
           <div className="flex items-center gap-1.5 px-3 pt-2.5 text-[11px] text-zinc-400 border-b border-border/20 pb-1.5">
             <FileCode size={12} className="text-[#007acc] shrink-0" />
             <span className="truncate font-mono">{activeFile.split('/').pop()}</span>
+            {includeWorkspaceContext && agentMode.id === 'agent' && (
+              <span className="text-[10px] text-emerald-300 bg-emerald-500/10 px-1.5 py-0.2 rounded font-sans shrink-0">
+                Workspace
+              </span>
+            )}
             {selectedCode && (
               <span className="text-[10px] text-[#007acc] bg-[#007acc]/10 px-1.5 py-0.2 rounded font-sans shrink-0 ml-auto">
                 {selectedCode.split('\n').length} lines
@@ -457,8 +550,18 @@ export function ChatPanel({
             <Button type="button" variant="ghost" size="icon" className="h-7 w-7 hover:text-foreground">
               <AtSign size={14} />
             </Button>
-            <Button type="button" variant="ghost" size="icon" className="h-7 w-7 hover:text-foreground">
-              <Globe size={14} />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "h-7 w-7 hover:text-foreground",
+                includeWorkspaceContext && agentMode.id === 'agent' && "text-[#007acc] bg-[#007acc]/10",
+              )}
+              onClick={() => setIncludeWorkspaceContext((value) => !value)}
+              title={includeWorkspaceContext ? 'Workspace context on' : 'Workspace context off'}
+            >
+              <FolderOpen size={14} />
             </Button>
             <Button type="button" variant="ghost" size="icon" className="h-7 w-7 hover:text-foreground">
               <ImageIcon size={14} />

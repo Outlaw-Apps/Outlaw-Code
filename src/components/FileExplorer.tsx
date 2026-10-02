@@ -22,6 +22,7 @@ import { useFs, useGit, useWorkspace } from '../lib/fs/context';
 import type { FsEntry } from '../lib/fs/types';
 import type { GitFileEntry } from '../lib/git/types';
 import { onWorkspaceEvent, emitWorkspaceEvent } from '../lib/workspace-events';
+import { onFileOperationRequest } from '../lib/file-operation-requests';
 import { isSameOrUnder, joinPath, parentOf, relativeTo } from '../lib/fs/paths';
 
 interface FileExplorerProps {
@@ -217,6 +218,20 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
   const [opBusy, setOpBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
+  const beginCreate = useCallback((mode: 'new-file' | 'new-dir', dir: string) => {
+    if (!provider.root) {
+      setError('Open a folder before creating files.');
+      return;
+    }
+    setPendingOp({ mode, dir });
+    setOpValue('');
+    setOpError(null);
+  }, [provider.root]);
+
+  useEffect(() => onFileOperationRequest((request) => {
+    beginCreate(request === 'new-file' ? 'new-file' : 'new-dir', rootDir);
+  }), [beginCreate, rootDir]);
+
   const runPendingOp = async () => {
     if (!pendingOp) return;
     const name = opValue.trim();
@@ -231,8 +246,10 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
         await provider.rename(oldPath, newPath);
         emitWorkspaceEvent({ type: 'renamed', oldPath, newPath });
       } else if (pendingOp.mode === 'new-file') {
-        await provider.createEntry(joinPath(dir, name), 'file');
+        const newPath = joinPath(dir, name);
+        await provider.createEntry(newPath, 'file');
         emitWorkspaceEvent({ type: 'tree-changed' });
+        onFileSelect(newPath);
       } else if (pendingOp.mode === 'new-dir') {
         await provider.createEntry(joinPath(dir, name), 'dir');
         emitWorkspaceEvent({ type: 'tree-changed' });
@@ -317,9 +334,7 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
               <ContextMenuItem
                 className="gap-2 cursor-pointer"
                 onSelect={() => {
-                  setPendingOp({ mode: 'new-file', dir: node.kind === 'dir' ? node.path : parentOf(node.path, rootDir) });
-                  setOpValue('');
-                  setOpError(null);
+                  beginCreate('new-file', node.kind === 'dir' ? node.path : parentOf(node.path, rootDir));
                 }}
               >
                 <FilePlus size={12} /> New File...
@@ -327,9 +342,7 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
               <ContextMenuItem
                 className="gap-2 cursor-pointer"
                 onSelect={() => {
-                  setPendingOp({ mode: 'new-dir', dir: node.kind === 'dir' ? node.path : parentOf(node.path, rootDir) });
-                  setOpValue('');
-                  setOpError(null);
+                  beginCreate('new-dir', node.kind === 'dir' ? node.path : parentOf(node.path, rootDir));
                 }}
               >
                 <FolderPlus size={12} /> New Folder...
@@ -394,6 +407,26 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
       <div className="h-9 px-3 flex items-center justify-between border-b border-[#2b2b2b] shrink-0">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Explorer</span>
         <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 hover:bg-[#333]"
+            title="New file..."
+            onClick={() => beginCreate('new-file', rootDir)}
+            disabled={!provider.root}
+          >
+            <FilePlus className="w-3 h-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 hover:bg-[#333]"
+            title="New folder..."
+            onClick={() => beginCreate('new-dir', rootDir)}
+            disabled={!provider.root}
+          >
+            <FolderPlus className="w-3 h-3" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -468,6 +501,26 @@ export function FileExplorer({ onFileSelect, selectedFile, className, onImportCo
               </p>
               {!isLoading && (
                 <div className="flex flex-col gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[11px] gap-1.5"
+                    onClick={() => beginCreate('new-file', rootDir)}
+                    disabled={!provider.root}
+                  >
+                    <FilePlus size={12} />
+                    New file...
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[11px] gap-1.5"
+                    onClick={() => beginCreate('new-dir', rootDir)}
+                    disabled={!provider.root}
+                  >
+                    <FolderPlus size={12} />
+                    New folder...
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
