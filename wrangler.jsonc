@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "outlaw-code",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "routes": [
+    { "pattern": "code.outlw.tech", "zone_name": "outlw.tech", "custom_domain": true }
+  ],
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "vars": {
+    // Comma-separated hostnames the /api/openai proxy may forward to. Use "*" to allow any https host.
+    "ALLOWED_UPSTREAM_HOSTS": "api.openai.com,openrouter.ai,api.together.xyz,integrate.api.nvidia.com,api.x.ai,generativelanguage.googleapis.com"
+  },
+  "observability": {
+    "enabled": true,
+    "issues": { "enabled": true }
+  }
+}

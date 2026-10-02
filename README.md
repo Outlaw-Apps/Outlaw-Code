@@ -24,7 +24,7 @@ Copy `.env.example` to `.env.local` and fill in your values, or set them at runt
 
 Settings remain **one API key + base URL + model**. The browser never calls the provider origin directly: the OpenAI SDK uses a local `/api/openai` proxy endpoint, and that proxy forwards to the Settings base URL via the `X-Upstream-Base-URL` header (stripped before the upstream request). Authorization still comes from Settings. Streaming (SSE / chunked) is piped through the proxy.
 
-> ⚠️ The API key still lives in the browser (local/personal use). The proxy solves CORS / same-origin for `npm run dev`, `npm run preview`, and the packaged Electron desktop app. A static-only host (`vite build` artifacts on CDN/GitHub Pages/etc.) does **not** run this middleware — production web hosting needs Node hosting that serves with `vite preview` (or equivalent Connect middleware), or a tiny edge/worker that implements the same `/api/openai` forward.
+> ⚠️ The API key still lives in the browser (local/personal use). The proxy solves CORS / same-origin for `npm run dev`, `npm run preview`, and the packaged Electron desktop app. The Cloudflare Workers deploy (`worker/index.ts`, see "Deploy to Cloudflare Workers") ships the same `/api/openai` forward; other static-only hosts still need their own equivalent middleware or edge Worker.
 
 ### Sandbox / preview (stub)
 
@@ -33,11 +33,38 @@ The sandbox, live preview, and file-explorer-against-remote-FS features relied o
 ## Development
 
 ```bash
-npm install --legacy-peer-deps   # openai v5 has an optional peer on zod v3; project uses zod v4
+npm install                       # .npmrc sets legacy-peer-deps (openai v5 peers on zod v3; project uses zod v4)
 npm run dev                       # start Vite dev server (port 3000) — includes AI proxy
 npx tsc --noEmit                  # typecheck
 npx vite build                    # production build
 npm run preview                   # serve build + same AI proxy middleware
+```
+
+## Deploy to Cloudflare Workers
+
+Authenticate once, then deploy the public web build:
+
+```bash
+npx wrangler login
+npm run deploy
+```
+
+`npm run deploy` runs `vite build --mode web`, checks the bundle for API keys, then runs `wrangler deploy`. To serve the same build and Worker locally at <http://localhost:8787>:
+
+```bash
+npm run preview:worker
+```
+
+`wrangler.jsonc` serves static assets from `dist/` with SPA fallback. `worker/index.ts` handles `/api/openai/*`, requires HTTPS upstreams, and limits upstream hosts through `vars.ALLOWED_UPSTREAM_HOSTS`; use `*` to allow any HTTPS host.
+
+`.env.web` blanks `VITE_OPENAI_API_KEY` during the public web build so a provider key is never baked into the bundle. Web users enter their key in Settings.
+
+The Worker is also connected to this GitHub repo through Workers Builds (branch `main`, custom domain `code.outlw.tech`). In the Worker's build settings use build command `npm run build:web` and deploy command `npx wrangler deploy`, and never add `VITE_OPENAI_API_KEY` as a build variable. `wrangler.jsonc` is what makes that deploy work: without it, `wrangler deploy` launches an interactive setup wizard that fails in CI.
+
+After editing `wrangler.jsonc`, regenerate Worker bindings:
+
+```bash
+npm run types:worker
 ```
 
 ## Electron desktop app

@@ -9,6 +9,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:web": "vite build --mode web",
+    "deploy": "npm run build:web && node scripts/check-web-bundle-secrets.cjs && wrangler deploy",
+    "preview:worker": "npm run build:web && node scripts/check-web-bundle-secrets.cjs && wrangler dev",
+    "types:worker": "wrangler types --strict-vars=false",
     "electron:dev": "node electron/start-dev.cjs",
     "electron:build": "npm run build && electron-builder --win --x64",
     "electron:build:dir": "npm run build && electron-builder --win --x64 --dir",
@@ -19,7 +23,8 @@
     "test:terminal-smoke": "electron electron/terminal-smoke.cjs",
     "lint:css": "stylelint \"src/**/*.css\" --fix --quiet",
     "lint:js": "eslint . --ext ts,tsx --report-unused-disable-directives",
-    "lint:types": "tsc --noEmit",
+    "lint:types": "tsc --noEmit && npm run lint:worker",
+    "lint:worker": "tsc -p tsconfig.worker.json --noEmit",
     "check:css-vars": "node scripts/check-css-variables.js",
     "check:css-classes": "node scripts/check-css-classes.js"
   },
@@ -106,7 +111,8 @@
     "tsx": "^4.23.15",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
-    "vite": "^8.1.5"
+    "vite": "^8.1.5",
+    "wrangler": "^4.146.0"
   },
   "build": {
     "appId": "com.outlawcode.app",
@@ -161,6 +167,7 @@
   "allowScripts": {
     "electron": true,
     "esbuild": true,
-    "node-pty": true
+    "node-pty": true,
+    "workerd@1.20261001.1": true
   }
 }

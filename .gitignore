@@ -24,3 +24,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Cloudflare Workers (wrangler local state / local secrets)
+.wrangler/
+.dev.vars*
